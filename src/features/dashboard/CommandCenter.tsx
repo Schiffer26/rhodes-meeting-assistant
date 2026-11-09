@@ -25,6 +25,7 @@ import {
   isTaskDueSoon, isTaskOverdue, todayISO, daysUntil, personName,
 } from "@/utils/helpers";
 import { BootCenterLogo } from "@/components/BootCenterLogo";
+import { PAGE_ARTWORK, type BackdropScreen } from "@/components/PageBackdrop";
 
 /** Semantic tone token → CSS variable, so status colouring stays theme-driven. */
 /** Compact operation codes for the narrow activity rail. */
@@ -66,11 +67,13 @@ export function CommandCenter({ navigate }: { navigate: (r: Route) => void }) {
 
   // ── Navigation module ───────────────────────────────────────────────
   const NavTile = ({
-    title, subtitle, icon: Icon, onClick, tone = "light", size = "large", index, meta, ariaLabel, style,
+    title, subtitle, icon: Icon, onClick, tone = "light", size = "large", index, meta, ariaLabel, style, artwork,
   }: {
     title: string; subtitle: string; icon: any; onClick: () => void;
     tone?: "light" | "dark" | "cyan"; size?: "large" | "medium" | "small";
     index: string; meta?: string; ariaLabel?: string; style?: React.CSSProperties;
+    /** previews the artwork of the page this module opens (see PAGE_ARTWORK) */
+    artwork?: BackdropScreen;
   }) => {
     const isCyan = tone === "cyan";
     const isDark = tone === "dark";
@@ -90,6 +93,14 @@ export function CommandCenter({ navigate }: { navigate: (r: Route) => void }) {
           ...style,
         }}
         aria-label={ariaLabel ?? title}>
+        {/* page artwork preview — decorative, never above the content */}
+        {artwork && (
+          <span className="nav-art" aria-hidden="true">
+            <span className="nav-art-img" style={{ backgroundImage: `url("${PAGE_ARTWORK[artwork]}")` }} />
+            <span className="nav-art-scrim" />
+          </span>
+        )}
+
         {/* background iconography */}
         <span className="nav-bg">
           <Icon size={size === "large" ? 200 : size === "medium" ? 132 : 96} color={fg} />
@@ -330,6 +341,7 @@ export function CommandCenter({ navigate }: { navigate: (r: Route) => void }) {
             icon={CalendarClock}
             onClick={() => navigate({ section: "meetings" })}
             size="large"
+            artwork="meetings"
             ariaLabel="Meeting Operations"
             index="R·02 / OPERATIONS"
             meta={`${data.meetings.length} RECORDS`}
@@ -344,6 +356,7 @@ export function CommandCenter({ navigate }: { navigate: (r: Route) => void }) {
               icon={Users}
               onClick={() => navigate({ section: "personnel" })}
               size="small"
+              artwork="personnel"
               ariaLabel="Personnel Registry"
               index="R·03"
               meta={String(people.length).padStart(2, "0")}

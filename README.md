@@ -70,7 +70,9 @@ src/
 │   ├── toast.tsx               ← Activity notifications
 │   ├── RhodesLogo.tsx          ← Official RHODES.png mark — HUD chip, favicon, touch icon
 │   ├── BootCenterLogo.tsx      ← Boot_Center_logo.png — boot + Command Center centrepiece
-│   └── PageBackdrop.tsx        ← Per-screen backdrop layer for the two operations screens
+│   └── PageBackdrop.tsx        ← Per-screen backdrop layer for the two operations screens;
+│                                 its PAGE_ARTWORK table also feeds the Command Center
+│                                 navigation previews
 ├── layout/AppShell.tsx         ← Sidebar, top information bar, global search, clock
 ├── features/
 │   ├── dashboard/CommandCenter.tsx

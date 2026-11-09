@@ -1485,6 +1485,48 @@ html[data-motion="reduced"] .env-blur-near { filter: none; }
   margin-left: auto; flex-shrink: 0;
 }
 
+/* ── Navigation artwork (the page a module opens, previewed in the card) ──
+   Two operation modules carry their own page artwork. Both layers are
+   decorative: they sit inside the clipped card under every piece of
+   content, take no pointer events, and are toned by a scrim of the card's
+   own surface so titles, labels and figures keep their full contrast.
+   The image is `cover`-fitted, so it is never stretched or distorted. */
+.nav-tile .nav-art {
+  position: absolute; inset: 0; z-index: 0;
+  pointer-events: none; overflow: hidden;
+}
+.nav-tile .nav-art-img {
+  position: absolute; inset: 0;
+  background-repeat: no-repeat;
+  background-size: cover;
+  background-position: 50% 46%;
+  opacity: 0.94;
+  transition: opacity 170ms linear;
+}
+/* the card's own surface is the veil (the two artwork cards are the light
+   modules, so --panel-white is exactly their ground): densest behind the
+   title column and the readout band, lightest where only artwork shows */
+.nav-tile .nav-art-scrim {
+  position: absolute; inset: 0;
+  background:
+    linear-gradient(90deg,
+      color-mix(in srgb, var(--panel-white) 86%, transparent) 0%,
+      color-mix(in srgb, var(--panel-white) 76%, transparent) 58%,
+      color-mix(in srgb, var(--panel-white) 68%, transparent) 100%),
+    linear-gradient(180deg,
+      transparent 0%,
+      transparent 58%,
+      color-mix(in srgb, var(--panel-white) 58%, transparent) 100%);
+}
+/* where a card carries page artwork, its icon watermark steps back so the
+   two never read as competing smudges */
+.nav-tile .nav-art ~ .nav-bg { opacity: 0.035; }
+
+/* a hair of extra artwork on hover — static, and off with reduced motion */
+.nav-tile:hover .nav-art-img { opacity: 1; }
+html[data-motion="off"] .nav-tile .nav-art-img,
+html[data-motion="reduced"] .nav-tile .nav-art-img { transition: none; }
+
 /* hover: a diagonal sheen sweeps the slab, never on the active press */
 .nav-tile::after {
   content: ""; position: absolute; inset: 0; pointer-events: none;

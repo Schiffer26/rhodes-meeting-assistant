@@ -14,7 +14,12 @@
 
 export type BackdropScreen = "meetings" | "personnel";
 
-const ARTWORK: Record<BackdropScreen, string> = {
+/**
+ * The one place the two operation artwork files are named. The pages paint
+ * them full bleed; the Command Center navigation modules preview the same
+ * files inside their own cards, so both stay in step by construction.
+ */
+export const PAGE_ARTWORK: Record<BackdropScreen, string> = {
   meetings: "/Meeting_operations_bg.png",
   personnel: "/Personnel_bg.png",
 };
@@ -24,7 +29,7 @@ export function PageBackdrop({ screen }: { screen: BackdropScreen }) {
     <div className="page-backdrop" data-screen={screen} aria-hidden="true" role="presentation">
       <div
         className="page-backdrop-art"
-        style={{ backgroundImage: `url("${ARTWORK[screen]}")` }}
+        style={{ backgroundImage: `url("${PAGE_ARTWORK[screen]}")` }}
       />
       <div className="page-backdrop-scrim" />
     </div>
