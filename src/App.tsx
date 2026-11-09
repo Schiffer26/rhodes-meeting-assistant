@@ -2,7 +2,7 @@
 // RHODES · application root
 // Boot sequence → shell → section router.
 // ─────────────────────────────────────────────────────────────
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { StickyNote } from "lucide-react";
 import { DataProvider, useAppData, useMotionScale } from "@/hooks/store";
@@ -22,39 +22,151 @@ import { Insignia } from "@/components/Insignia";
 import { Button, Field, Modal } from "@/components/ui";
 import { todayISO } from "@/utils/helpers";
 
-// ── Boot sequence (~1.3s) ─────────────────────────────────────
+// ── Boot sequence ─────────────────────────────────────────────
+// Four-phase cinematic startup: power activation → insignia reconstruction →
+// terminal initialization → command center deployment.
+//
+// Stages are driven by one timer set; the finish() guard makes skipping and
+// the timer mutually idempotent, so no duplicate completion callback can fire
+// and the timers are always cleared before unmount.
+const BOOT_PHASES = [
+  { code: "01", label: "Frame calibration" },
+  { code: "02", label: "Optics reconstruction" },
+  { code: "03", label: "Terminal initialization" },
+  { code: "04", label: "Command center deployment" },
+] as const;
+const BOOT_METER = 14;
+const BOOT_FILLED = [4, 7, 11, BOOT_METER];
+
 function BootSequence({ done }: { done: () => void }) {
-  const { scale } = useMotionScale();
+  const { reduced } = useMotionScale();
+  const [stage, setStage] = useState(0);
+  const finished = useRef(false);
+  const doneRef = useRef(done);
+  const skipRef = useRef<HTMLButtonElement | null>(null);
+  doneRef.current = done;
+
+  const finish = useCallback(() => {
+    if (finished.current) return;
+    finished.current = true;
+    doneRef.current();
+  }, []);
+
   useEffect(() => {
-    const t = window.setTimeout(done, 1350 * (scale || 1) + 150);
-    return () => window.clearTimeout(t);
-  }, [done, scale]);
+    const timeline = reduced ? [0, 240, 470, 700] : [0, 620, 1240, 1980];
+    const stageTimers = timeline.map((ms, i) => window.setTimeout(() => setStage(i), ms));
+    const endTimer = window.setTimeout(finish, reduced ? 1040 : 2620);
+    return () => {
+      stageTimers.forEach(window.clearTimeout);
+      window.clearTimeout(endTimer);
+    };
+  }, [reduced, finish]);
+
+  // skip: Escape, Enter or Space — announced via the control's key shortcut
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" || e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+        e.preventDefault();
+        finish();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [finish]);
+
+  // the skip control takes focus so keyboard and screen-reader users can leave at once
+  useEffect(() => {
+    skipRef.current?.focus({ preventScroll: true });
+  }, []);
+
+  const filled = BOOT_FILLED[stage];
+  const phase = BOOT_PHASES[stage];
+
+  const tag = (label: string, value: string, side: "left" | "right", order: number) => (
+    <div className={`boot-tag ${side}`} style={{ ["--i" as string]: order }}>
+      <span className="boot-tag-key">{label}</span>
+      <span className="boot-tag-val">{value}</span>
+    </div>
+  );
 
   return (
-    <motion.div className="boot-overlay" onClick={done} exit={{ opacity: 0 }} transition={{ duration: 0.3 }}
-      role="status" aria-label="RHODES initializing">
-      {/* signal sweep */}
-      <motion.div style={{ position: "absolute", top: "50%", left: 0, height: 1, background: "linear-gradient(90deg, transparent, #18d1ff, transparent)", width: "100%" }}
-        initial={{ scaleX: 0, opacity: 0 }} animate={{ scaleX: 1, opacity: [0, 1, 0.4] }}
-        transition={{ duration: 0.5 * (scale || 1) }} />
-      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 22 }}>
-        <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }}
-          transition={{ duration: 0.4 * (scale || 1), delay: 0.12 * (scale || 1), ease: "easeOut" }}>
-          <Insignia size={64} />
-        </motion.div>
-        <motion.div
-          initial={{ opacity: 0, letterSpacing: "0.6em" }} animate={{ opacity: 1, letterSpacing: "0.34em" }}
-          transition={{ duration: 0.45 * (scale || 1), delay: 0.35 * (scale || 1) }}
-          style={{ fontFamily: "var(--font-display)", fontSize: 26, fontWeight: 700, color: "#f0f0f0" }}>
-          RHODES
-        </motion.div>
-        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.6 * (scale || 1), duration: 0.3 }}
-          style={{ fontFamily: "var(--font-mono)", fontSize: 10, letterSpacing: "0.3em", color: "#8d8d8d", textTransform: "uppercase" }}>
-          Meeting Operations Terminal · Local Link Established
-        </motion.div>
-        <motion.div initial={{ scaleX: 0 }} animate={{ scaleX: 1 }} transition={{ duration: 0.6 * (scale || 1), delay: 0.65 * (scale || 1), ease: "linear" }}
-          style={{ width: 220, height: 2, background: "#18d1ff", transformOrigin: "left" }} />
+    <motion.div
+      className={`boot-overlay${reduced ? " is-reduced" : ""}`}
+      data-stage={stage}
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: reduced ? 0.18 : 0.45, ease: "easeInOut" }}
+      role="dialog"
+      aria-modal="true"
+      aria-label="RHODES system initialization">
+
+      {/* ── scenery: architectural frame, grid, light sweeps ── */}
+      <div className="boot-scenery" aria-hidden="true">
+        <div className="boot-grid" />
+        <div className="boot-horizon" />
+        <div className="boot-frame">
+          <span className="boot-corner tl" />
+          <span className="boot-corner tr" />
+          <span className="boot-corner bl" />
+          <span className="boot-corner br" />
+          <span className="boot-rail rail-top" />
+          <span className="boot-rail rail-bottom" />
+        </div>
+        <div className="boot-sweep sweep-a" />
+        <div className="boot-sweep sweep-b" />
       </div>
+
+      {/* ── core: insignia rig, lockup, meter ── */}
+      <div className="boot-core">
+        <div className="boot-rig">
+          <div className="boot-tags left">
+            {tag("System", "RHODES", "left", 0)}
+            {tag("Operation mode", "Local", "left", 1)}
+          </div>
+
+          <div className="boot-emblem">
+            <div className="boot-rings">
+              <span className="boot-ring ring-outer" />
+              <span className="boot-ring ring-ticks" />
+              <span className="boot-ring ring-inner" />
+              <span className="boot-cross h" />
+              <span className="boot-cross v" />
+              <span className="boot-scan" />
+            </div>
+            <div className="boot-emblem-mark">
+              <Insignia size={160} accent="var(--accent)" fg="var(--text)" />
+            </div>
+          </div>
+
+          <div className="boot-tags right">
+            {tag("Network", "Offline", "right", 0)}
+            {tag("Session", "Local", "right", 1)}
+          </div>
+        </div>
+
+        <div className="boot-lockup">
+          <div className="boot-wordmark">RHODES</div>
+          <div className="boot-sub">Rhodes Island — Local Operations Terminal</div>
+        </div>
+
+        <div className="boot-meter" aria-hidden="true">
+          {Array.from({ length: BOOT_METER }, (_, i) => (
+            <span key={i} className="boot-seg" data-on={i < filled ? "1" : "0"} style={{ ["--i" as string]: i }} />
+          ))}
+        </div>
+
+        <div className="boot-phase" aria-live="polite" aria-atomic="true">
+          <span className="boot-phase-code">{phase.code}</span>
+          <span className="boot-phase-label" key={phase.code}>{phase.label}</span>
+          <span className="boot-phase-total" aria-hidden="true">/ 04</span>
+        </div>
+      </div>
+
+      <button ref={skipRef} type="button" className="boot-skip" onClick={finish} aria-keyshortcuts="Escape">
+        <span>Skip initialization</span>
+        <kbd aria-hidden="true">ESC</kbd>
+      </button>
     </motion.div>
   );
 }
