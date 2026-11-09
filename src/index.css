@@ -356,14 +356,14 @@ html[data-theme="archive"] .panel { box-shadow: var(--shadow-sm); }
 }
 
 /* left-rail rhythm — defaults, then compressed on short viewports */
-.rail-plate, .rail-panel { padding: 12px 15px; }
+.rail-plate, .rail-panel { padding: 13px 14px; }
 .rail-metric { font-size: 36px; line-height: 1; margin: 3px 0 8px; }
 .rail-rows { margin-top: 10px; display: grid; gap: 8px; }
 .rail-activity-row { padding: 5px 13px; }
 
 /* compact rail rows: schedule entries, priority actions */
 .mini-row {
-  display: flex; align-items: baseline; gap: 10px; width: 100%; min-width: 0;
+  display: flex; align-items: baseline; gap: 8px; width: 100%; min-width: 0;
   padding: 0; background: none; border: none; font: inherit; color: inherit;
   text-align: left; cursor: pointer;
 }
@@ -791,7 +791,36 @@ html[data-motion="off"] .pulse { animation: none !important; }
 .vb-br { bottom: 0; right: 0; border-bottom: 2px solid; border-right: 2px solid; }
 .reticle {
   position: absolute; border: 1px dashed var(--accent); border-radius: 50%; pointer-events: none;
+  aspect-ratio: 1;
 }
+.reticle-1 { width: min(66%, 400px); opacity: 0.18; }
+.reticle-2 { width: min(90%, 520px); opacity: 0.09; }
+
+/* identity stage: fills the centre column, height capped, rings relative to it */
+.identity-stage {
+  flex: 1 1 auto; width: 100%; max-width: 860px; min-height: 240px;
+  container-type: inline-size;
+  max-height: clamp(300px, 44vh, 440px); z-index: 1;
+  padding: 30px 24px;
+}
+.identity-ring {
+  position: absolute; height: auto; aspect-ratio: 1; pointer-events: none;
+}
+.identity-ring { width: min(74%, 430px); opacity: 0.5; }
+.identity-ring-outer { width: min(96%, 540px); opacity: 0.35; }
+
+/* the insignia scales with the stage so it stays the focal point at any width */
+.identity-insignia { position: relative; z-index: 2; width: clamp(136px, 21cqw, 178px); }
+.identity-insignia svg { width: 100%; height: auto; display: block; }
+
+.identity-lockup { position: relative; z-index: 1; text-align: center; width: 100%; max-width: 860px; }
+.identity-wordmark {
+  font-size: clamp(44px, 4.1vw, 60px); letter-spacing: 0.26em; line-height: 1;
+  margin-right: -0.26em; color: var(--text);
+}
+.identity-sub { font-size: 11.5px; letter-spacing: 0.34em; margin-top: 10px; }
+.identity-rule { margin: 16px auto 0; width: min(280px, 62%); }
+.identity-readout { position: relative; z-index: 1; width: 100%; max-width: 860px; }
 .readout { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--border); background: var(--surface); }
 .readout-cell { padding: 11px 14px; border-right: 1px solid var(--border-soft); }
 .readout-cell:last-child { border-right: none; }
@@ -848,12 +877,42 @@ html[data-motion="reduced"] .env-blur-far,
 html[data-motion="reduced"] .env-blur-near { filter: none; }
 
 /* ── Command center grid ────────────────────────────────────────── */
+/* Wide desktop: three zones, the identity stage taking the lion's share. */
 .cmd-grid {
   display: grid;
-  gap: 18px 20px;
+  gap: 20px;
   align-items: stretch;
-  grid-template-columns: minmax(248px, 286px) minmax(0, 1fr) minmax(348px, 420px);
+  grid-template-columns: minmax(234px, 258px) minmax(0, 1fr) minmax(336px, 378px);
+  grid-template-areas:
+    "rail identity nav"
+    "bottom bottom bottom";
 }
+.cmd-rail { grid-area: rail; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.cmd-nav { grid-area: nav; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.cmd-identity { grid-area: identity; min-width: 0; height: 100%; }
+.cmd-bottom-wrap { grid-area: bottom; min-width: 0; }
+
+.identity-stack {
+  position: relative; display: flex; flex-direction: column;
+  justify-content: center; align-items: center; gap: 18px; height: 100%; min-width: 0;
+}
+.identity-scrim {
+  position: absolute; inset: -10px 0 0; pointer-events: none; z-index: 0;
+  width: 100%; max-width: 1000px; left: 50%; transform: translateX(-50%);
+  background: radial-gradient(76% 58% at 50% 44%,
+    color-mix(in srgb, var(--bg) 62%, transparent) 0%,
+    color-mix(in srgb, var(--bg) 34%, transparent) 62%,
+    transparent 100%);
+}
+
+/* Navigation slots — proportions live here so breakpoints can re-flow them. */
+.nav-slot { min-width: 0; min-height: 0; }
+.nav-slot-lg { flex: 2.1 1 0; }
+.nav-slot-pair { flex: 1 1 0; }
+.nav-slot-archive { flex: 1.05 1 0; }
+.nav-slot-new { flex: 1.2 1 0; }
+.cmd-nav .nav-slot > .nav-tile,
+.cmd-nav .nav-slot .nav-pair { height: 100%; }
 
 /* Navigation modules: sizing lives here so breakpoints can scale it. */
 .nav-tile { border-radius: 0; }
@@ -868,12 +927,19 @@ html[data-motion="reduced"] .env-blur-near { filter: none; }
 .nav-tile.md .nav-title { font-size: clamp(19px, 1.9vw, 28px); }
 .nav-tile.sm .nav-title { font-size: clamp(15px, 1.45vw, 21px); }
 .nav-tile .nav-sub {
-  font-family: var(--font-mono); letter-spacing: 0.16em; white-space: nowrap;
+  font-family: var(--font-mono); letter-spacing: 0.1em; white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis;
   padding-right: 20px; /* keep the ellipsis clear of the clipped corner */
 }
 .nav-tile.lg .nav-sub { font-size: 11px; }
+.nav-tile.sm .nav-sub { letter-spacing: 0.1em; padding-right: 0; }
+.nav-tile.sm .nav-rule { width: 8px; }
 .nav-tile.md .nav-sub, .nav-tile.sm .nav-sub { font-size: 9px; }
+.nav-tile.md .nav-rule { width: 8px; }
+.nav-tile.md .nav-sub { letter-spacing: 0.06em; padding-right: 4px; }
+.nav-tile.md .nav-foot { gap: 8px; }
+.nav-foot { display: flex; align-items: center; gap: 10px; }
+.nav-tile.sm .nav-foot { gap: 8px; }
 .nav-tile .nav-meta {
   font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.12em;
   margin-left: auto; flex-shrink: 0;
@@ -964,11 +1030,38 @@ button.cal-chip {
 .skip-link:focus { top: 10px; }
 
 /* ── Responsive: smaller desktop windows ────────────────────────── */
-@media (max-width: 1340px) {
+@media (max-width: 1400px) {
   .hud-title { font-size: 20px; }
   .masthead-title { font-size: 46px; }
-  .cmd-grid { gap: 16px 18px; grid-template-columns: minmax(232px, 262px) minmax(0, 1fr) minmax(322px, 378px); }
+  .cmd-grid { gap: 18px; grid-template-columns: minmax(224px, 246px) minmax(0, 1fr) minmax(318px, 352px); }
   .readout-val { font-size: 17px; }
+  .rail-count { display: none; }
+  .nav-tile.sm { padding: 12px; }
+  .nav-tile.md { padding: 15px; }
+}
+
+/* Two-row composition: information + identity above, navigation in a wide grid below. */
+@media (max-width: 1180px) {
+  .cmd-grid {
+    gap: 18px;
+    grid-template-columns: minmax(238px, 300px) minmax(0, 1fr);
+    grid-template-areas:
+      "rail identity"
+      "nav nav"
+      "bottom bottom";
+  }
+  .cmd-nav {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-rows: auto auto;
+    gap: 14px;
+  }
+  .nav-slot-lg { grid-column: 1 / 3; grid-row: 1 / 3; }
+  .nav-slot-pair { grid-column: 3 / 5; grid-row: 1; }
+  .nav-slot-archive { grid-column: 3; grid-row: 2; }
+  .nav-slot-new { grid-column: 4; grid-row: 2; }
+  .identity-stage { max-height: clamp(280px, 34vh, 360px); }
+  .identity-wordmark { font-size: clamp(42px, 4.6vw, 56px); }
 }
 
 @media (max-width: 1220px) {
@@ -976,26 +1069,50 @@ button.cal-chip {
   .hud-sub { display: none; }
   .masthead-title { font-size: 40px; }
   .masthead-eyebrow { font-size: 10px; letter-spacing: 0.16em; }
-  .cmd-grid { gap: 14px 16px; grid-template-columns: minmax(208px, 228px) minmax(0, 1fr) minmax(276px, 314px); }
   .hud-kbd-opt { display: none; }
-  .nav-tile .nav-meta { display: none; }
-  .readout { grid-template-columns: 1fr 1fr; }
-  .readout-cell:nth-child(2) { border-right: none; }
-  .readout-cell:nth-child(-n+2) { border-bottom: 1px solid var(--border-soft); }
+  .cmd-grid { gap: 16px; grid-template-columns: minmax(212px, 230px) minmax(0, 1fr) minmax(300px, 330px); }
   .archive-grid { grid-template-columns: 286px minmax(0, 1fr); }
   .ws-grid { grid-template-columns: minmax(0, 1fr) 300px; }
+  /* keep long module captions legible in the tighter rail */
+  .nav-tile.lg { padding: 20px; }
+  .nav-tile.lg .nav-sub { letter-spacing: 0.11em; }
+  .nav-foot { display: flex; align-items: center; gap: 10px; }
+.nav-tile.sm .nav-foot { gap: 8px; }
+.nav-tile .nav-meta { font-size: 9px; }
+  .nav-tile.sm .nav-meta { display: none; }
 }
 
 @media (max-width: 1120px) {
   .hud-code { font-size: 9px; padding: 4px 7px; }
   .hud-opt { display: none; }          /* secondary icon shortcuts; modules remain */
-  .cmd-grid { gap: 12px 14px; grid-template-columns: minmax(224px, 236px) minmax(0, 1fr) minmax(248px, 272px); }
-  .nav-tile.lg { padding: 18px; min-height: 196px; }
-  .nav-tile.md { padding: 14px; }
-  .nav-tile .nav-meta { display: none; }
+  .cmd-grid { gap: 16px; grid-template-columns: minmax(226px, 280px) minmax(0, 1fr); }
+  .cmd-nav { gap: 12px; }
+  .nav-tile.md { padding: 15px; }
   .archive-grid { grid-template-columns: 252px minmax(0, 1fr); }
   .masthead-title { font-size: 36px; }
   .ws-grid { grid-template-columns: minmax(0, 1fr) 272px; }
+}
+
+/* Very narrow: everything stacks in reading order, navigation in a 2-up grid. */
+@media (max-width: 900px) {
+  .cmd-grid {
+    gap: 16px;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "identity" "rail" "nav" "bottom";
+  }
+  .cmd-rail { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: start; }
+  .cmd-nav { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: auto; gap: 12px; }
+  .nav-slot-lg { grid-column: 1 / -1; grid-row: auto; }
+  .nav-slot-pair { grid-column: 1 / -1; grid-row: auto; }
+  .nav-slot-archive { grid-column: 1; grid-row: auto; }
+  .nav-slot-new { grid-column: 2; grid-row: auto; }
+  .cmd-bottom { grid-template-columns: minmax(0, 1fr); }
+  .readout { grid-template-columns: 1fr 1fr; }
+  .readout-cell:nth-child(2) { border-right: none; }
+  .readout-cell:nth-child(-n+2) { border-bottom: 1px solid var(--border-soft); }
+  .nav-foot { display: flex; align-items: center; gap: 10px; }
+.nav-tile.sm .nav-foot { gap: 8px; }
+.nav-tile .nav-meta { display: none; }
 }
 
 /* short viewports: keep the whole composition on one screen */

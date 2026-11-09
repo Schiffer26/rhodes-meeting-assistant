@@ -104,7 +104,7 @@ export function CommandCenter({ navigate }: { navigate: (r: Route) => void }) {
           <span className="nav-title">{title}</span>
         </span>
 
-        <span style={{ display: "flex", alignItems: "center", gap: 12, position: "relative", zIndex: 1 }}>
+        <span className="nav-foot" style={{ position: "relative", zIndex: 1 }}>
           <span className="nav-rule" style={{ background: ruleFg }} />
           <span className="nav-sub" style={{ color: subFg }}>{subtitle}</span>
           {meta && <span className="nav-meta" style={{ color: fg }}>{meta}</span>}
@@ -118,7 +118,7 @@ export function CommandCenter({ navigate }: { navigate: (r: Route) => void }) {
       <h1 className="sr-only">Command Center — Rhodes Operations Deck</h1>
 
       {/* ══ LEFT — operational information ═════════════════════════ */}
-      <Stagger style={{ display: "flex", flexDirection: "column", gap: 10, minWidth: 0 }}>
+      <Stagger className="cmd-rail">
         {/* Priority notifications */}
         <StaggerItem x={-14}>
           <div style={{ display: "grid", gap: 6 }}>
@@ -169,10 +169,10 @@ export function CommandCenter({ navigate }: { navigate: (r: Route) => void }) {
 
         {/* Upcoming schedule — light information plate */}
         <StaggerItem x={-14}>
-          <div className="plate clip-corner" style={{ padding: "12px 16px", borderLeft: "4px solid var(--accent)", marginRight: -22, position: "relative", zIndex: 3, boxShadow: "var(--shadow)" }}>
+          <div className="plate clip-corner rail-plate" style={{ borderLeft: "4px solid var(--accent)", boxShadow: "var(--shadow)" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
               <span className="mono-label" style={{ color: "rgba(23,25,27,0.6)" }}>// Upcoming Schedule</span>
-              <span className="mono" style={{ fontSize: 9, letterSpacing: "0.16em", color: "rgba(23,25,27,0.45)" }}>T+72H</span>
+              <span className="mono rail-count" style={{ fontSize: 9, letterSpacing: "0.16em", color: "rgba(23,25,27,0.45)" }}>T+72H</span>
             </div>
             <div className="metric-value rail-metric" style={{ color: "var(--text-dark)" }}>
               {String(upcoming.length).padStart(2, "0")}
@@ -256,18 +256,11 @@ export function CommandCenter({ navigate }: { navigate: (r: Route) => void }) {
       </Stagger>
 
       {/* ══ CENTRE — RHODES identity ═══════════════════════════════ */}
-      <Reveal delay={0.08}>
-        <div style={{
-          display: "flex", flexDirection: "column", justifyContent: "center",
-          height: "100%", minHeight: 520, position: "relative", padding: "8px 8px 0",
-        }}>
+      <Reveal delay={0.08} className="cmd-identity">
+        <div className="identity-stack">
           {/* soft scrim so the environment reads as depth, not noise */}
-          <div aria-hidden style={{
-            position: "absolute", inset: "-10px -6px 0",
-            background: "radial-gradient(74% 58% at 50% 44%, color-mix(in srgb, var(--bg) 62%, transparent) 0%, color-mix(in srgb, var(--bg) 34%, transparent) 62%, transparent 100%)",
-            pointerEvents: "none", zIndex: 0,
-          }} />
-          <div className="viewport" style={{ flex: "1 1 auto", minHeight: 280, maxHeight: 372, width: "100%", zIndex: 1 }}>
+          <div className="identity-scrim" aria-hidden />
+          <div className="viewport identity-stage">
             <span className="viewport-bracket vb-tl" />
             <span className="viewport-bracket vb-tr" />
             <span className="viewport-bracket vb-bl" />
@@ -282,32 +275,30 @@ export function CommandCenter({ navigate }: { navigate: (r: Route) => void }) {
 
             <span className="insignia-mount" />
             <span className="insignia-horizon" />
-            <div className="reticle" style={{ width: 296, height: 296, opacity: 0.18 }} />
-            <div className="reticle" style={{ width: 392, height: 392, opacity: 0.09 }} />
+            <div className="reticle reticle-1" />
+            <div className="reticle reticle-2" />
             {/* instrument rings — slow, and still under reduced motion */}
-            <svg className="ring-slow" width="330" height="330" viewBox="0 0 330 330" style={{ position: "absolute", opacity: 0.5 }}>
+            <svg className="ring-slow identity-ring" width="330" height="330" viewBox="0 0 330 330">
               <circle cx="165" cy="165" r="152" fill="none" stroke="var(--accent)" strokeWidth="1" strokeDasharray="2 26" opacity="0.55" />
               <circle cx="165" cy="13" r="2.5" fill="var(--accent)" />
             </svg>
-            <svg className="ring-slow-rev" width="424" height="424" viewBox="0 0 424 424" style={{ position: "absolute", opacity: 0.35 }}>
+            <svg className="ring-slow-rev identity-ring identity-ring-outer" width="424" height="424" viewBox="0 0 424 424">
               <circle cx="212" cy="212" r="198" fill="none" stroke="var(--border)" strokeWidth="1" strokeDasharray="34 18" opacity="0.7" />
               <circle cx="212" cy="14" r="2" fill="var(--border)" />
             </svg>
 
-            <div style={{ position: "relative", zIndex: 2 }}>
+            <div className="identity-insignia">
               <Insignia size={148} accent="var(--accent)" fg="var(--text)" />
             </div>
           </div>
 
-          <div style={{ textAlign: "center", position: "relative", zIndex: 1 }}>
-            <div className="module-label" style={{ fontSize: 54, letterSpacing: "0.26em", lineHeight: 1, marginRight: "-0.26em", color: "var(--text)" }}>RHODES</div>
-            <div className="mono identity-sub" style={{ fontSize: 11.5, letterSpacing: "0.34em", marginTop: 10 }}>
-              MEETING OPERATIONS TERMINAL
-            </div>
-            <div className="tick-rule" style={{ margin: "16px auto 0", width: 240 }} />
+          <div className="identity-lockup">
+            <div className="module-label identity-wordmark">RHODES</div>
+            <div className="mono identity-sub">MEETING OPERATIONS TERMINAL</div>
+            <div className="tick-rule identity-rule" />
           </div>
 
-          <div className="readout" style={{ marginTop: 16, position: "relative", zIndex: 1 }}>
+          <div className="readout identity-readout">
             <div className="readout-cell">
               <div className="readout-key">System Status</div>
               <div className="readout-val" style={{ color: "var(--ok)" }}>Nominal</div>
@@ -331,8 +322,8 @@ export function CommandCenter({ navigate }: { navigate: (r: Route) => void }) {
       </Reveal>
 
       {/* ══ RIGHT — navigation modules ═════════════════════════════ */}
-      <Stagger style={{ display: "flex", flexDirection: "column", gap: 10, minWidth: 0 }}>
-        <StaggerItem x={16} style={{ flex: "2 1 0" }}>
+      <Stagger className="cmd-nav">
+        <StaggerItem x={16} className="nav-slot nav-slot-lg">
           <NavTile
             title="Meeting Operations"
             subtitle="SCHEDULE & COORDINATION"
@@ -345,7 +336,7 @@ export function CommandCenter({ navigate }: { navigate: (r: Route) => void }) {
           />
         </StaggerItem>
 
-        <StaggerItem x={16} style={{ flex: "1 1 0" }}>
+        <StaggerItem x={16} className="nav-slot nav-slot-pair">
           <div className="nav-pair">
             <NavTile
               title="Personnel"
@@ -371,7 +362,7 @@ export function CommandCenter({ navigate }: { navigate: (r: Route) => void }) {
           </div>
         </StaggerItem>
 
-        <StaggerItem x={16} style={{ flex: "1.1 1 0" }}>
+        <StaggerItem x={16} className="nav-slot nav-slot-archive">
           <NavTile
             title="Records Archive"
             subtitle="HISTORICAL DOCUMENTATION"
@@ -384,7 +375,7 @@ export function CommandCenter({ navigate }: { navigate: (r: Route) => void }) {
           />
         </StaggerItem>
 
-        <StaggerItem x={16} style={{ flex: "1.25 1 0", marginTop: -14, position: "relative", zIndex: 2 }}>
+        <StaggerItem x={16} className="nav-slot nav-slot-new">
           <NavTile
             title="New Meeting"
             subtitle="COMMENCE BRIEFING"
@@ -398,7 +389,7 @@ export function CommandCenter({ navigate }: { navigate: (r: Route) => void }) {
       </Stagger>
 
       {/* ══ BOTTOM — recent records ════════════════════════════════ */}
-      <Reveal delay={0.14} style={{ gridColumn: "1 / -1" }}>
+      <Reveal delay={0.14} className="cmd-bottom-wrap">
         <div className="cmd-bottom">
           <Panel title="Recent Records" code={`${recent.length} OF ${data.meetings.length} · MOST RECENTLY TOUCHED`} pad={false} className="clip-corner-bottom">
             {recent.length === 0 && <Empty icon={<FileText size={18} />} title="No records on file" hint="Register the first meeting to begin the operational log." />}
