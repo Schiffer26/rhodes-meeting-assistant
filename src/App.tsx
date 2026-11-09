@@ -44,40 +44,72 @@ function BootSequence({ done }: { done: () => void }) {
   const finished = useRef(false);
   const doneRef = useRef(done);
   const skipRef = useRef<HTMLButtonElement | null>(null);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  const timers = useRef<number[]>([]);
   doneRef.current = done;
 
-  const finish = useCallback(() => {
-    if (finished.current) return;
-    finished.current = true;
-    doneRef.current();
+  // every pending timer is cancelled before completion can run
+  const clearTimers = useCallback(() => {
+    timers.current.forEach((t) => window.clearTimeout(t));
+    timers.current = [];
   }, []);
+
+  const finish = useCallback(() => {
+    if (finished.current) return;      // idempotent: skip, keys and the timer share this path
+    finished.current = true;
+    clearTimers();                     // no stage transition can follow the hand-off
+    doneRef.current();
+  }, [clearTimers]);
 
   useEffect(() => {
     const timeline = reduced ? [0, 240, 470, 700] : [0, 620, 1240, 1980];
     const stageTimers = timeline.map((ms, i) => window.setTimeout(() => setStage(i), ms));
     const endTimer = window.setTimeout(finish, reduced ? 1040 : 2620);
+    timers.current = [...stageTimers, endTimer];
     return () => {
+      // second safeguard: nothing survives if the overlay unmounts for any other reason
       stageTimers.forEach(window.clearTimeout);
       window.clearTimeout(endTimer);
+      timers.current = [];
     };
   }, [reduced, finish]);
 
-  // skip: Escape, Enter or Space — announced via the control's key shortcut
+  // While the dialog is up it owns the keyboard: the shell's shortcuts are
+  // swallowed in the capture phase, Tab cycles inside the dialog, and Escape
+  // stays the global skip. Enter and Space are left to the native button.
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" || e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+    const holdFocus = () => skipRef.current?.focus({ preventScroll: true });
+    const onKeyDown = (e: KeyboardEvent) => {
+      e.stopPropagation();
+      if (e.key === "Tab") {
+        e.preventDefault();
+        holdFocus();
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        finish();
+        return;
+      }
+      if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+        if (document.activeElement === skipRef.current) return;   // native activation handles it
         e.preventDefault();
         finish();
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    const onFocusIn = (e: FocusEvent) => {
+      const target = e.target as Node | null;
+      if (target && dialogRef.current?.contains(target)) return;
+      holdFocus();
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    document.addEventListener("focusin", onFocusIn, true);
+    holdFocus();
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, true);
+      document.removeEventListener("focusin", onFocusIn, true);
+    };
   }, [finish]);
-
-  // the skip control takes focus so keyboard and screen-reader users can leave at once
-  useEffect(() => {
-    skipRef.current?.focus({ preventScroll: true });
-  }, []);
 
   const filled = BOOT_FILLED[stage];
   const phase = BOOT_PHASES[stage];
@@ -91,6 +123,7 @@ function BootSequence({ done }: { done: () => void }) {
 
   return (
     <motion.div
+      ref={dialogRef}
       className={`boot-overlay${reduced ? " is-reduced" : ""}`}
       data-stage={stage}
       initial={{ opacity: 0 }}

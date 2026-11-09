@@ -1038,9 +1038,7 @@ html[data-theme="archive"] .boot-overlay {
   color: var(--text-2); background: color-mix(in srgb, var(--surface) 70%, transparent);
   border: 1px solid var(--border); cursor: pointer;
   transition: color 0.15s linear, border-color 0.15s linear, background-color 0.15s linear;
-  animation: bootSkipIn 0.7s ease-out 0.35s 1 both;
 }
-@keyframes bootSkipIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 .boot-skip:hover { color: var(--text); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
 .boot-skip:focus-visible { outline: 1px solid color-mix(in srgb, var(--accent) 60%, transparent); outline-offset: 2px; color: var(--text); }
 .boot-skip kbd {
