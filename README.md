@@ -43,6 +43,12 @@ requested during operation.
 ## 2 · Folder structure
 
 ```
+public/
+└── RHODES.png                  ← Official RHODES branding asset (1536 × 1024).
+                                  Rendered only through `src/components/RhodesLogo.tsx`,
+                                  which is the single source of truth for the mark;
+                                  also served as the favicon.
+
 src/
 ├── types/index.ts              ← Full TypeScript data model (Meeting, AgendaItem,
 │                                 Person, MeetingNote, Decision, ActionItem, AppSettings)
@@ -56,7 +62,8 @@ src/
 ├── components/
 │   ├── ui.tsx                  ← Design-system primitives (Panel, Button, Modal, Badge…)
 │   ├── toast.tsx               ← Activity notifications
-│   └── Insignia.tsx            ← Original RHODES geometric insignia (SVG)
+│   └── RhodesLogo.tsx          ← Official RHODES mark — shared component, single
+│                                 source of truth for every logo placement
 ├── layout/AppShell.tsx         ← Sidebar, top information bar, global search, clock
 ├── features/
 │   ├── dashboard/CommandCenter.tsx

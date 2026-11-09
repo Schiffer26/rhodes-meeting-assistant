@@ -2,10 +2,11 @@
 // RHODES · application root
 // Boot sequence → shell → section router.
 // ─────────────────────────────────────────────────────────────
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { StickyNote } from "lucide-react";
 import { DataProvider, useAppData, useMotionScale } from "@/hooks/store";
+import type { StorageAdapter } from "@/services/storage";
 import { UiContext } from "@/hooks/ui";
 import { ToastProvider, useToast } from "@/components/toast";
 import { AppShell, Route, SECTIONS } from "@/layout/AppShell";
@@ -65,19 +66,39 @@ function BootSequence({ done }: { done: () => void }) {
   // boot screen simply holds its first frame — the shell is never a fallback.
   const [logoReady, setLogoReady] = useState(false);
   useEffect(() => {
-    let alive = true;
-    const ready = () => { if (alive) setLogoReady(true); };
+    let settled = false;
+    let failsafe = 0;
+    // idempotent: the first successful decode, load error or failsafe wins, and
+    // the guard timer is dropped immediately so nothing lingers after settling
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      if (failsafe) { window.clearTimeout(failsafe); failsafe = 0; }
+      setLogoReady(true);
+    };
+    // decode() resolves only once the bitmap is ready to paint; browsers without
+    // it (or a decode rejection) fall back to the load/error events
+    const afterLoad = () => {
+      if (typeof img.decode !== "function") { settle(); return; }
+      try {
+        img.decode().then(settle, settle);
+      } catch {
+        settle();
+      }
+    };
     const img = new Image();
+    img.addEventListener("load", afterLoad);
+    img.addEventListener("error", settle);   // a missing file must not stall launch
+    // armed before anything can settle synchronously, so `settle()` always has a
+    // timer to drop and no guard ever outlives readiness
+    failsafe = window.setTimeout(settle, 1500);
     img.src = RHODES_LOGO_SRC;
-    if (img.complete) { ready(); return () => { alive = false; }; }
-    img.addEventListener("load", ready);
-    img.addEventListener("error", ready);          // a missing file must not stall launch
-    const failsafe = window.setTimeout(ready, 1500); // never block on a decode that cannot finish
+    if (img.complete && img.naturalWidth > 0) afterLoad();
     return () => {
-      alive = false;
-      img.removeEventListener("load", ready);
-      img.removeEventListener("error", ready);
-      window.clearTimeout(failsafe);
+      settled = true;
+      if (failsafe) window.clearTimeout(failsafe);
+      img.removeEventListener("load", afterLoad);
+      img.removeEventListener("error", settle);
     };
   }, []);
 
@@ -282,7 +303,10 @@ function useDocumentFlags() {
     mq.addEventListener?.("change", h);
     return () => mq.removeEventListener?.("change", h);
   }, []);
-  useEffect(() => {
+  // Layout effect, not effect: the saved theme, type scale and motion mode are
+  // written to <html> in the same commit that first renders the boot screen, so
+  // the very first painted frame already uses the operator's preference.
+  useLayoutEffect(() => {
     const root = document.documentElement;
     const resolved = s.theme === "terminal" ? "terminal" : s.theme === "archive" ? "archive" : osDark ? "terminal" : "archive";
     root.setAttribute("data-theme", resolved);
@@ -406,9 +430,9 @@ function Gate() {
   return <Core />;
 }
 
-export default function App() {
+export default function App({ adapter }: { adapter?: StorageAdapter } = {}) {
   return (
-    <DataProvider>
+    <DataProvider adapter={adapter}>
       <ToastProvider>
         <Gate />
       </ToastProvider>

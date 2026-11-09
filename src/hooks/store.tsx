@@ -10,6 +10,7 @@ import type {
 } from "@/types";
 import { DEFAULT_SETTINGS } from "@/types";
 import { storage, validateImport } from "@/services/storage";
+import type { StorageAdapter } from "@/services/storage";
 import { buildSeedData } from "@/data/seed";
 import { todayISO, uid } from "@/utils/helpers";
 
@@ -65,11 +66,35 @@ export interface Store {
 
 const Ctx = createContext<Store | null>(null);
 
-export function DataProvider({ children }: { children: React.ReactNode }) {
+/**
+ * Empty but schema-valid record exposed while `ready === false`.
+ *
+ * Consumers that mount during the loading phase (only the startup `Gate`) read
+ * `ready`, never the records, and `Core`/`AppShell` are gated behind `ready`.
+ * Using a real value instead of a null assertion keeps `Store["data"]` honest
+ * and means no component can dereference `undefined` even if it mounts early.
+ */
+const LOADING_DATA: AppData = {
+  meetings: [],
+  agendaItems: [],
+  personnel: [],
+  notes: [],
+  decisions: [],
+  actionItems: [],
+  settings: DEFAULT_SETTINGS,
+  meta: { version: 0, firstRunAt: "", adapter: "pending" },
+};
+
+export function DataProvider({ children, adapter }: { children: React.ReactNode; adapter?: StorageAdapter }) {
+  // An alternate adapter (async IPC/SQLite backend, or a test double) can be
+  // injected; the browser build always uses the default localStorage adapter.
+  const sourceRef = useRef<StorageAdapter>(adapter ?? storage);
+  const source = sourceRef.current;
+
   // Hydrate during the first render when the adapter can read synchronously:
   // the startup decision (boot vs. shell) must not wait for an effect, or the
   // shell could paint for a frame before the boot sequence takes over.
-  const [data, setData] = useState<AppData | null>(() => storage.loadSync?.() ?? null);
+  const [data, setData] = useState<AppData | null>(() => source.loadSync?.() ?? null);
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const ready = data !== null;
   const hydratedOnFirstRender = useRef(data !== null);
@@ -79,20 +104,20 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (hydratedOnFirstRender.current) return;   // already hydrated above
     let alive = true;
-    storage.load().then((d) => alive && setData(d));
+    source.load().then((d) => alive && setData(d));
     return () => { alive = false; };
-  }, []);
+  }, [source]);
 
   const persist = useCallback((next: AppData) => {
     if (persistTimer.current) window.clearTimeout(persistTimer.current);
     setSaveState("saving");
     persistTimer.current = window.setTimeout(() => {
       const op = ++opCount.current;
-      storage.save(next)
+      source.save(next)
         .then(() => { if (opCount.current === op) setSaveState("saved"); })
         .catch(() => { if (opCount.current === op) setSaveState("error"); });
     }, 280);
-  }, []);
+  }, [source]);
 
   const mutate = useCallback((fn: (d: AppData) => AppData) => {
     setData((prev) => {
@@ -297,10 +322,10 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     if (!data) return;
     if (persistTimer.current) window.clearTimeout(persistTimer.current);
     setSaveState("saving");
-    storage.save(data)
+    source.save(data)
       .then(() => setSaveState("saved"))
       .catch(() => setSaveState("error"));
-  }, [data]);
+  }, [data, source]);
 
   const exportJSON = useCallback((): string => JSON.stringify(data, null, 2), [data]);
 
@@ -332,7 +357,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   }, [updateSettings]);
 
   const value = useMemo<Store>(() => ({
-    ready: ready, data: data!, saveState,
+    ready: ready, data: data ?? LOADING_DATA, saveState,
     createMeeting, updateMeeting, deleteMeeting, setMeetingStatus,
     addAgendaItem, updateAgendaItem, deleteAgendaItem, moveAgendaItem, setAgendaStatus,
     createPerson, updatePerson, deletePerson,
@@ -351,7 +376,8 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     updateSettings, flush, exportJSON, importJSON, resetToDemo, restoreDefaultSettings,
   ]);
 
-  if (!value.ready) return <Ctx.Provider value={value}>{null}</Ctx.Provider>;
+  // Children always render: `Gate` owns the loading decision and shows the
+  // local-link screen while an asynchronous adapter is still loading.
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 
