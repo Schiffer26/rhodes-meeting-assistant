@@ -327,7 +327,9 @@ function Core() {
   const [route, setRoute] = useState<Route>({ section: "command" });
   // Meeting Operations and Personnel Registry paint their own page artwork; the
   // closing status strip gets a local contrast treatment there and only there.
-  const hasPageArtwork = route.section === "meetings" || route.section === "personnel";
+  const hasPageArtwork =
+    !route.meetingId &&
+    (route.section === "meetings" || route.section === "personnel");
   const [booted, setBooted] = useState(false);
   const [meetingForm, setMeetingForm] = useState<{ open: boolean; meetingId: string | null }>({ open: false, meetingId: null });
   const [taskForm, setTaskForm] = useState<{ open: boolean; meetingId: string | null }>({ open: false, meetingId: null });
