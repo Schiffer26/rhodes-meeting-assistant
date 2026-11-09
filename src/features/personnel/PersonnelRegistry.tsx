@@ -8,6 +8,7 @@ import { Mail, Pencil, Phone, Plus, Search, Trash2, UserRound, X } from "lucide-
 import { Badge, Button, ConfirmDialog, Empty, Field, Modal, PageHeader, Panel, Reveal } from "@/components/ui";
 import { useAppData } from "@/hooks/store";
 import { useToast } from "@/components/toast";
+import { PageBackdrop } from "@/components/PageBackdrop";
 import type { Route } from "@/layout/AppShell";
 import { Person } from "@/types";
 import { DECISION_STATUS, MEETING_STATUS, PRIORITY, TASK_STATUS, formatDate, isTaskOverdue } from "@/utils/helpers";
@@ -37,7 +38,9 @@ export function PersonnelRegistry({ navigate }: { navigate: (r: Route) => void }
   }, [form]);
 
   return (
-    <div style={{ display: "grid", gap: 24 }}>
+    <div className="page-canvas">
+      <PageBackdrop screen="personnel" />
+      <div className="page-stack">
             <Reveal>
         <PageHeader
           eyebrow={`// PERSONNEL ARCHIVE · ${data.personnel.length} REGISTERED`}
@@ -138,6 +141,7 @@ export function PersonnelRegistry({ navigate }: { navigate: (r: Route) => void }
         message={<>Delete <b style={{ color: "var(--text)" }}>{confirmDel?.fullName} ({confirmDel?.code})</b>? They will be removed from meeting attendee lists; their action items become unassigned. This cannot be undone.</>}
         confirmLabel="Delete File"
         onConfirm={() => { if (confirmDel) { deletePerson(confirmDel.id); toast.success("Personnel file deleted."); } setConfirmDel(null); }} />
+      </div>
     </div>
   );
 }

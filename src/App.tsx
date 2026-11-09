@@ -19,7 +19,7 @@ import { PersonnelRegistry } from "@/features/personnel/PersonnelRegistry";
 import { TaskOperations } from "@/features/tasks/TaskOperations";
 import { RecordsArchive } from "@/features/archive/RecordsArchive";
 import { SystemConfiguration } from "@/features/settings/SystemConfiguration";
-import { RhodesLogo, RHODES_LOGO_SRC } from "@/components/RhodesLogo";
+import { BootCenterLogo, BOOT_CENTER_LOGO_SRC } from "@/components/BootCenterLogo";
 import { Button, Field, Modal } from "@/components/ui";
 import { todayISO } from "@/utils/helpers";
 
@@ -92,7 +92,7 @@ function BootSequence({ done }: { done: () => void }) {
     // armed before anything can settle synchronously, so `settle()` always has a
     // timer to drop and no guard ever outlives readiness
     failsafe = window.setTimeout(settle, 1500);
-    img.src = RHODES_LOGO_SRC;
+    img.src = BOOT_CENTER_LOGO_SRC;
     if (img.complete && img.naturalWidth > 0) afterLoad();
     return () => {
       settled = true;
@@ -210,7 +210,7 @@ function BootSequence({ done }: { done: () => void }) {
               <span className="boot-scan" />
             </div>
             <div className="boot-emblem-mark">
-              <RhodesLogo className="boot-logo" />
+              <BootCenterLogo className="boot-logo" />
             </div>
           </div>
 

@@ -44,10 +44,16 @@ requested during operation.
 
 ```
 public/
-└── RHODES.png                  ← Official RHODES branding asset (1536 × 1024).
-                                  Rendered only through `src/components/RhodesLogo.tsx`,
-                                  which is the single source of truth for the mark;
-                                  also served as the favicon.
+├── RHODES.png                  ← Official RHODES branding asset (1536 × 1024): HUD chip,
+│                                 favicon and touch icon. Rendered only through
+│                                 `src/components/RhodesLogo.tsx`, the single source of
+│                                 truth for the brand mark.
+├── Boot_Center_logo.png        ← Boot sequence + Command Center centrepiece (1965 × 1965,
+│                                 RGBA). Rendered only through `src/components/BootCenterLogo.tsx`.
+├── Meeting_operations_bg.png   ← Meeting Operations screen backdrop (1536 × 1024),
+│                                 painted by `src/components/PageBackdrop.tsx`.
+└── Personnel_bg.png            ← Personnel Registry screen backdrop (1536 × 1024),
+                                  also painted by `src/components/PageBackdrop.tsx`.
 
 src/
 ├── types/index.ts              ← Full TypeScript data model (Meeting, AgendaItem,
@@ -62,8 +68,9 @@ src/
 ├── components/
 │   ├── ui.tsx                  ← Design-system primitives (Panel, Button, Modal, Badge…)
 │   ├── toast.tsx               ← Activity notifications
-│   └── RhodesLogo.tsx          ← Official RHODES mark — shared component, single
-│                                 source of truth for every logo placement
+│   ├── RhodesLogo.tsx          ← Official RHODES.png mark — HUD chip, favicon, touch icon
+│   ├── BootCenterLogo.tsx      ← Boot_Center_logo.png — boot + Command Center centrepiece
+│   └── PageBackdrop.tsx        ← Per-screen backdrop layer for the two operations screens
 ├── layout/AppShell.tsx         ← Sidebar, top information bar, global search, clock
 ├── features/
 │   ├── dashboard/CommandCenter.tsx

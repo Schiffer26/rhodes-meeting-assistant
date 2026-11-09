@@ -655,6 +655,61 @@ html[data-theme="archive"] .input:focus, html[data-theme="archive"] .select:focu
   border: 1px solid var(--hud-line); padding: 2px 5px; color: var(--hud-dim);
 }
 
+/* ═══════════════════════════════════════════════════════════════════════
+   PAGE BACKDROPS — Meeting Operations / Personnel Registry
+   One decorative layer per screen (`PageBackdrop`). It is pinned to the
+   workspace viewport (below the HUD, full width) and clipped there, so the
+   artwork reads as the screen's own paper, never as a global theme; it
+   lives at z-index 0 with the content stack above it and never takes a
+   pointer event. The plate keeps its 3:2 proportions (`cover`, anchored
+   top-centre) and is masked at its own edges; a theme-aware scrim lifts
+   the heading band and settles the lower edge. Panels keep their opaque
+   surfaces, so every table, card and control stays fully readable.
+   ═══════════════════════════════════════════════════════════════════════ */
+.page-canvas { position: relative; isolation: isolate; }
+.page-stack { position: relative; z-index: 1; display: grid; gap: 24px; }
+
+.page-backdrop {
+  position: fixed; top: 68px; left: 0; right: 0; bottom: 0;
+  z-index: 0; pointer-events: none; overflow: hidden;
+}
+.page-backdrop-art {
+  position: absolute; inset: 0;
+  background-repeat: no-repeat;
+  background-position: center 6%;
+  background-size: cover;
+  /* the plate's own corner typography is veiled so it never competes with
+     the page heading; the emblem reads through the body of the screen */
+  -webkit-mask-image: linear-gradient(180deg, rgba(0,0,0,0) 0%, rgba(0,0,0,0) 11%, rgba(0,0,0,1) 30%, rgba(0,0,0,1) 80%, rgba(0,0,0,0.3) 100%);
+  mask-image: linear-gradient(180deg, rgba(0,0,0,0) 0%, rgba(0,0,0,0) 11%, rgba(0,0,0,1) 30%, rgba(0,0,0,1) 80%, rgba(0,0,0,0.3) 100%);
+}
+.page-backdrop-scrim { position: absolute; inset: 0; }
+
+/* TERMINAL — the white plate becomes a slate blueprint in the dark console */
+html[data-theme="terminal"] .page-backdrop-art { opacity: 0.85; }
+html[data-theme="terminal"] .page-backdrop-scrim {
+  background:
+    linear-gradient(180deg,
+      rgba(14, 16, 18, 0.7) 0%,
+      rgba(21, 23, 25, 0.44) 42%,
+      rgba(21, 23, 25, 0.52) 70%,
+      rgba(14, 16, 18, 0.78) 88%,
+      rgba(14, 16, 18, 0.94) 100%);
+}
+
+/* ARCHIVE — document stock behind the light console; the scrim keeps the
+   heading band and the lower edge from washing out the type. */
+html[data-theme="archive"] .page-backdrop-art { opacity: 0.75; }
+html[data-theme="archive"] .page-backdrop-scrim {
+  background:
+    linear-gradient(180deg,
+      rgba(217, 221, 224, 0.52) 0%,
+      rgba(217, 221, 224, 0.26) 40%,
+      rgba(217, 221, 224, 0.3) 70%,
+      rgba(217, 221, 224, 0.58) 88%,
+      rgba(217, 221, 224, 0.9) 100%);
+}
+
 /* ── Ambient / environment layers ───────────────────────────────────── */
 .env-root { position: absolute; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; }
 .env-layer { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
@@ -759,6 +814,23 @@ html[data-motion="off"] .pulse { animation: none !important; }
   user-select: none;
 }
 html[data-theme="archive"] .rhodes-logo { box-shadow: 0 0 0 1px var(--border-soft); }
+
+/* ── boot / command-centre mark ───────────────────────────────────────
+   public/Boot_Center_logo.png (1965 × 1965, RGBA, transparent corners).
+   Square artwork on its own circular field: contained, never cropped,
+   stretched or recoloured. Only the boot emblem and the identity stage
+   use it — every other placement keeps the official RHODES.png mark. */
+.boot-center-logo {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-width: 100%;
+  aspect-ratio: 1;
+  object-fit: contain;
+  object-position: center;
+  background: transparent;
+  user-select: none;
+}
 
 /* header chip — keeps the HUD cell exactly as tall as before */
 .hud-logo {
@@ -978,16 +1050,25 @@ html[data-theme="archive"] .boot-overlay {
 
 .boot-emblem-mark {
   position: relative; z-index: 1;
-  width: clamp(184px, 19vw, 264px);
+  /* square mark: sized against --boot-rig so its circle sits inside the
+     inner dashed reticle at every viewport */
+  width: min(60%, 216px);
   opacity: 0; transform: scale(0.86);
   transition: opacity 0.8s ease-out, transform 1.1s cubic-bezier(0.16, 0.84, 0.3, 1);
 }
-.boot-emblem-mark .rhodes-logo {
+.boot-emblem-mark .boot-center-logo {
   width: 100%; height: auto;
-  /* mounted-display edge + restrained cyan bloom, as the reticle passes behind */
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--accent) 38%, transparent),
-    0 0 40px color-mix(in srgb, var(--accent) 16%, transparent);
+  position: relative; z-index: 1;
+}
+/* the mark is circular and its corners are transparent, so the bloom follows
+   the artwork instead of drawing a rectangular bezel around it */
+.boot-emblem-mark::before {
+  content: ""; position: absolute; inset: -6%; border-radius: 50%; z-index: 0;
+  background: radial-gradient(closest-side,
+    color-mix(in srgb, var(--accent) 22%, transparent) 0%,
+    color-mix(in srgb, var(--accent) 10%, transparent) 58%,
+    transparent 78%);
+  pointer-events: none;
 }
 .boot-overlay:not([data-stage="0"]) .boot-emblem-mark {
   opacity: 1; transform: scale(1); filter: none;
@@ -1141,7 +1222,7 @@ html[data-theme="archive"] .boot-seg[data-on="1"] {
   .boot-core { gap: 10px; }
   .boot-wordmark { font-size: clamp(30px, 4.6vw, 44px); }
   .boot-sub { font-size: 9px; letter-spacing: 0.24em; }
-  .boot-emblem-mark { width: 74%; }   /* stays inside the smaller reticle */
+  .boot-emblem-mark { width: 58%; }   /* square mark stays inside the smaller reticle */
   .boot-tag { padding: 5px 8px; }
   .boot-tag-val { font-size: 13px; }
 }
@@ -1221,10 +1302,15 @@ html[data-theme="archive"] .boot-seg[data-on="1"] {
 .identity-ring-outer { width: min(96%, 540px); opacity: 0.35; }
 
 /* the insignia scales with the stage so it stays the focal point at any width */
-.identity-insignia { position: relative; z-index: 2; width: clamp(196px, 30cqw, 268px); }
-.identity-insignia .rhodes-logo {
-  width: 100%; height: auto;
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent);
+.identity-insignia { position: relative; z-index: 2; width: clamp(158px, 27cqw, 232px); }
+.identity-insignia .boot-center-logo { width: 100%; height: auto; position: relative; z-index: 1; }
+.identity-insignia::before {
+  content: ""; position: absolute; inset: -7%; border-radius: 50%; z-index: 0;
+  background: radial-gradient(closest-side,
+    color-mix(in srgb, var(--accent) 16%, transparent) 0%,
+    color-mix(in srgb, var(--accent) 7%, transparent) 60%,
+    transparent 80%);
+  pointer-events: none;
 }
 
 .identity-lockup { position: relative; z-index: 1; text-align: center; width: 100%; max-width: 860px; }

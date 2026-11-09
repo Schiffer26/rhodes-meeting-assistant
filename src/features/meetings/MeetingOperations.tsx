@@ -10,6 +10,7 @@ import { Badge, Button, ConfirmDialog, Empty, PageHeader, Panel, Reveal } from "
 import { useAppData } from "@/hooks/store";
 import { useToast } from "@/components/toast";
 import { useUi } from "@/hooks/ui";
+import { PageBackdrop } from "@/components/PageBackdrop";
 import type { Route } from "@/layout/AppShell";
 import { Meeting, MeetingStatus } from "@/types";
 import { MEETING_STATUS, formatDate, formatTime, personName, todayISO } from "@/utils/helpers";
@@ -109,7 +110,9 @@ export function MeetingOperations({ navigate }: { navigate: (r: Route) => void }
   ];
 
   return (
-    <div style={{ display: "grid", gap: 24 }}>
+    <div className="page-canvas">
+      <PageBackdrop screen="meetings" />
+      <div className="page-stack">
             <Reveal>
         <PageHeader
           eyebrow={`// OPERATIONS DIRECTORY · ${data.meetings.length} RECORDS`}
@@ -204,6 +207,7 @@ export function MeetingOperations({ navigate }: { navigate: (r: Route) => void }
           if (confirmDel) { deleteMeeting(confirmDel.id); toast.success("Meeting record deleted."); }
           setConfirmDel(null);
         }} />
+      </div>
     </div>
   );
 }
