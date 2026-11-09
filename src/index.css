@@ -1040,7 +1040,25 @@ button.cal-chip {
   .nav-tile.md { padding: 15px; }
 }
 
-/* Two-row composition: information + identity above, navigation in a wide grid below. */
+@media (max-width: 1220px) {
+  .hud-title { font-size: 18px; }
+  .hud-sub { display: none; }
+  .masthead-title { font-size: 40px; }
+  .masthead-eyebrow { font-size: 10px; letter-spacing: 0.16em; }
+  .hud-kbd-opt { display: none; }
+  .cmd-grid { gap: 16px; grid-template-columns: minmax(212px, 230px) minmax(0, 1fr) minmax(300px, 330px); }
+  .archive-grid { grid-template-columns: 286px minmax(0, 1fr); }
+  .ws-grid { grid-template-columns: minmax(0, 1fr) 300px; }
+  /* keep long module captions legible in the tighter rail */
+  .nav-tile.lg { padding: 20px; }
+  .nav-tile.lg .nav-sub { letter-spacing: 0.11em; }
+  .nav-tile .nav-meta { font-size: 9px; }
+  .nav-tile.sm .nav-meta { display: none; }
+}
+
+/* Two-row composition: information + identity above, navigation in a wide grid below.
+   Desktop breakpoints MUST stay in descending source order — a later 1220px rule would
+   otherwise re-impose three column tracks on these two-column areas. */
 @media (max-width: 1180px) {
   .cmd-grid {
     gap: 18px;
@@ -1062,24 +1080,6 @@ button.cal-chip {
   .nav-slot-new { grid-column: 4; grid-row: 2; }
   .identity-stage { max-height: clamp(280px, 34vh, 360px); }
   .identity-wordmark { font-size: clamp(42px, 4.6vw, 56px); }
-}
-
-@media (max-width: 1220px) {
-  .hud-title { font-size: 18px; }
-  .hud-sub { display: none; }
-  .masthead-title { font-size: 40px; }
-  .masthead-eyebrow { font-size: 10px; letter-spacing: 0.16em; }
-  .hud-kbd-opt { display: none; }
-  .cmd-grid { gap: 16px; grid-template-columns: minmax(212px, 230px) minmax(0, 1fr) minmax(300px, 330px); }
-  .archive-grid { grid-template-columns: 286px minmax(0, 1fr); }
-  .ws-grid { grid-template-columns: minmax(0, 1fr) 300px; }
-  /* keep long module captions legible in the tighter rail */
-  .nav-tile.lg { padding: 20px; }
-  .nav-tile.lg .nav-sub { letter-spacing: 0.11em; }
-  .nav-foot { display: flex; align-items: center; gap: 10px; }
-.nav-tile.sm .nav-foot { gap: 8px; }
-.nav-tile .nav-meta { font-size: 9px; }
-  .nav-tile.sm .nav-meta { display: none; }
 }
 
 @media (max-width: 1120px) {
