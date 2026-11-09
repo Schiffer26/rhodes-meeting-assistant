@@ -18,7 +18,7 @@ import { PersonnelRegistry } from "@/features/personnel/PersonnelRegistry";
 import { TaskOperations } from "@/features/tasks/TaskOperations";
 import { RecordsArchive } from "@/features/archive/RecordsArchive";
 import { SystemConfiguration } from "@/features/settings/SystemConfiguration";
-import { Insignia } from "@/components/Insignia";
+import { RhodesLogo, RHODES_LOGO_SRC } from "@/components/RhodesLogo";
 import { Button, Field, Modal } from "@/components/ui";
 import { todayISO } from "@/utils/helpers";
 
@@ -61,7 +61,28 @@ function BootSequence({ done }: { done: () => void }) {
     doneRef.current();
   }, [clearTimers]);
 
+  // The sequence starts only once the official mark is decoded. Until then the
+  // boot screen simply holds its first frame — the shell is never a fallback.
+  const [logoReady, setLogoReady] = useState(false);
   useEffect(() => {
+    let alive = true;
+    const ready = () => { if (alive) setLogoReady(true); };
+    const img = new Image();
+    img.src = RHODES_LOGO_SRC;
+    if (img.complete) { ready(); return () => { alive = false; }; }
+    img.addEventListener("load", ready);
+    img.addEventListener("error", ready);          // a missing file must not stall launch
+    const failsafe = window.setTimeout(ready, 1500); // never block on a decode that cannot finish
+    return () => {
+      alive = false;
+      img.removeEventListener("load", ready);
+      img.removeEventListener("error", ready);
+      window.clearTimeout(failsafe);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!logoReady || finished.current) return;   // no timers before the mark is ready, or after a skip
     const timeline = reduced ? [0, 240, 470, 700] : [0, 620, 1240, 1980];
     const stageTimers = timeline.map((ms, i) => window.setTimeout(() => setStage(i), ms));
     const endTimer = window.setTimeout(finish, reduced ? 1040 : 2620);
@@ -72,7 +93,7 @@ function BootSequence({ done }: { done: () => void }) {
       window.clearTimeout(endTimer);
       timers.current = [];
     };
-  }, [reduced, finish]);
+  }, [reduced, finish, logoReady]);
 
   // While the dialog is up it owns the keyboard: the shell's shortcuts are
   // swallowed in the capture phase, Tab cycles inside the dialog, and Escape
@@ -126,7 +147,7 @@ function BootSequence({ done }: { done: () => void }) {
       ref={dialogRef}
       className={`boot-overlay${reduced ? " is-reduced" : ""}`}
       data-stage={stage}
-      initial={{ opacity: 0 }}
+      initial={false}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: reduced ? 0.18 : 0.45, ease: "easeInOut" }}
@@ -168,7 +189,7 @@ function BootSequence({ done }: { done: () => void }) {
               <span className="boot-scan" />
             </div>
             <div className="boot-emblem-mark">
-              <Insignia size={160} accent="var(--accent)" fg="var(--text)" />
+              <RhodesLogo className="boot-logo" />
             </div>
           </div>
 
@@ -330,6 +351,12 @@ function Core() {
   return (
     <UiContext.Provider value={ui}>
       <AnimatePresence>{showBoot && <BootSequence key="boot" done={() => setBooted(true)} />}</AnimatePresence>
+
+      {/* The shell mounts only after the hand-off — nothing of the Command
+          Center, the HUD or the navigation can paint behind the boot screen.
+          During the exit the boot overlay is still mounted on top, so the
+          reveal stays the same crossfade. */}
+      {!showBoot && (
       <AppShell route={route} navigate={navigate} onQuickNote={() => setQuickNote(true)}>
         <AnimatePresence mode="wait" initial={false}>
           <motion.div key={wipeKey}
@@ -351,6 +378,7 @@ function Core() {
           </motion.div>
         </AnimatePresence>
       </AppShell>
+      )}
 
       {/* Global modals */}
       <MeetingFormModal open={meetingForm.open} meetingId={meetingForm.meetingId}
@@ -366,9 +394,12 @@ function Core() {
 function Gate() {
   const { ready } = useAppData();
   if (!ready) {
+    // Only reachable when an adapter cannot hydrate synchronously. It uses the
+    // boot field's own palette, so the transition into the boot screen is a
+    // continuation rather than a flash of another screen.
     return (
-      <div style={{ height: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#0f0f10" }}>
-        <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, letterSpacing: "0.3em", color: "#8d8d8d" }}>ESTABLISHING LOCAL LINK…</span>
+      <div className="boot-gate" role="status">
+        <span className="boot-gate-label">ESTABLISHING LOCAL LINK…</span>
       </div>
     );
   }

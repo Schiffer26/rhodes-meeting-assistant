@@ -66,13 +66,18 @@ export interface Store {
 const Ctx = createContext<Store | null>(null);
 
 export function DataProvider({ children }: { children: React.ReactNode }) {
-  const [data, setData] = useState<AppData | null>(null);
+  // Hydrate during the first render when the adapter can read synchronously:
+  // the startup decision (boot vs. shell) must not wait for an effect, or the
+  // shell could paint for a frame before the boot sequence takes over.
+  const [data, setData] = useState<AppData | null>(() => storage.loadSync?.() ?? null);
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const ready = data !== null;
+  const hydratedOnFirstRender = useRef(data !== null);
   const persistTimer = useRef<number | null>(null);
   const opCount = useRef(0);
 
   useEffect(() => {
+    if (hydratedOnFirstRender.current) return;   // already hydrated above
     let alive = true;
     storage.load().then((d) => alive && setData(d));
     return () => { alive = false; };

@@ -10,7 +10,7 @@ import {
   LayoutDashboard, CalendarRange, Users, ListTodo, Archive, Settings, Search,
   Sun, Moon, Monitor, Bell, Command, Clock3, Keyboard,
 } from "lucide-react";
-import { Insignia } from "@/components/Insignia";
+import { RhodesLogo } from "@/components/RhodesLogo";
 import { useAppData, useDerived, useMotionScale } from "@/hooks/store";
 import { Badge, Modal, SaveIndicator } from "@/components/ui";
 import { formatDateLong, formatTime, isTaskDueSoon, isTaskOverdue, timeAgo, todayISO } from "@/utils/helpers";
@@ -282,11 +282,8 @@ export function AppShell({ route, navigate, children, onQuickNote }: {
         {/* Left: identity + quick destinations */}
         <div className="hud-cell" style={{ gap: 0, padding: 0 }}>
           <button className="hud-brand" onClick={() => navigate({ section: "command" })} aria-label="RHODES — Command Center">
-            <span style={{
-              display: "grid", placeItems: "center", width: 38, height: 38,
-              background: "var(--accent)", flexShrink: 0,
-            }}>
-              <Insignia size={24} accent="#0E1012" fg="#0E1012" />
+            <span className="hud-logo">
+              <RhodesLogo />
             </span>
             <span>
               <span className="hud-wordmark" style={{ display: "block" }}>RHODES</span>

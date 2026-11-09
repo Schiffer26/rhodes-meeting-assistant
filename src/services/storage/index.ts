@@ -16,6 +16,14 @@ export const ADAPTER_LABEL = "Browser localStorage (prototype)";
 export interface StorageAdapter {
   readonly label: string;
   load(): Promise<AppData>;
+  /**
+   * Optional synchronous read used for first-render hydration. Returning the
+   * record here lets the startup screen be decided during the very first React
+   * render, so no shell content can paint before the boot sequence. Adapters
+   * that cannot read synchronously (e.g. a future IPC/SQLite backend) simply
+   * omit it and the async `load()` path is used instead.
+   */
+  loadSync?(): AppData | null;
   save(data: AppData): Promise<{ bytes: number }>;
   clear(): Promise<void>;
   usageInfo(): Promise<{ bytes: number; keys: number }>;
@@ -38,12 +46,12 @@ function deepValidate(data: AppData): boolean {
 export class LocalStorageAdapter implements StorageAdapter {
   readonly label = ADAPTER_LABEL;
 
-  async load(): Promise<AppData> {
+  loadSync(): AppData {
     try {
       const raw = window.localStorage.getItem(STORAGE_KEY);
       if (!raw) {
         const seed = buildSeedData();
-        await this.save(seed);
+        void this.save(seed);
         return seed;
       }
       const parsed = JSON.parse(raw) as AppData;
@@ -51,9 +59,15 @@ export class LocalStorageAdapter implements StorageAdapter {
       return parsed;
     } catch {
       const seed = buildSeedData();
-      await this.save(seed);
+      void this.save(seed);
       return seed;
     }
+  }
+
+  async load(): Promise<AppData> {
+    // `save` writes synchronously behind its async signature, so this resolves
+    // with exactly the same record the sync path returns.
+    return this.loadSync();
   }
 
   async save(data: AppData): Promise<{ bytes: number }> {

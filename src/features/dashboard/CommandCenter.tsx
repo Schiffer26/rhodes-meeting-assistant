@@ -24,7 +24,7 @@ import {
   MEETING_STATUS, formatDate, formatTime, formatDateLong,
   isTaskDueSoon, isTaskOverdue, todayISO, daysUntil, personName,
 } from "@/utils/helpers";
-import { Insignia } from "@/components/Insignia";
+import { RhodesLogo } from "@/components/RhodesLogo";
 
 /** Semantic tone token → CSS variable, so status colouring stays theme-driven. */
 /** Compact operation codes for the narrow activity rail. */
@@ -288,7 +288,7 @@ export function CommandCenter({ navigate }: { navigate: (r: Route) => void }) {
             </svg>
 
             <div className="identity-insignia">
-              <Insignia size={148} accent="var(--accent)" fg="var(--text)" />
+              <RhodesLogo />
             </div>
           </div>
 

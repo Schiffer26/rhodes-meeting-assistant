@@ -742,6 +742,43 @@ html[data-motion="off"] .env-sweep,
 html[data-motion="off"] .pulse { animation: none !important; }
 
 /* ═══════════════════════════════════════════════════════════════════════
+   OFFICIAL RHODES MARK — public/RHODES.png (1536 × 1024, opaque,
+   shipped on its own near-black field). Always contained, never
+   cropped, recoloured or stretched; the field reads as a brand
+   plate on the light ARCHIVE ground, which gets a hairline edge.
+   ═══════════════════════════════════════════════════════════════════════ */
+.rhodes-logo {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-width: 100%;
+  aspect-ratio: 1536 / 1024;
+  object-fit: contain;
+  object-position: center;
+  background: #040404;
+  user-select: none;
+}
+html[data-theme="archive"] .rhodes-logo { box-shadow: 0 0 0 1px var(--border-soft); }
+
+/* header chip — keeps the HUD cell exactly as tall as before */
+.hud-logo {
+  display: grid; place-items: center; width: 38px; height: 38px;
+  background: #040404; border: 1px solid color-mix(in srgb, var(--accent) 70%, transparent);
+  flex-shrink: 0; overflow: hidden;
+}
+.hud-logo .rhodes-logo { width: 100%; height: 100%; aspect-ratio: auto; object-fit: contain; box-shadow: none; }
+
+/* startup gate (async-adapter fallback) — the boot field, not another screen */
+.boot-gate {
+  height: 100vh; display: grid; place-items: center;
+  background: var(--bg-deep);
+}
+.boot-gate-label {
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.3em;
+  text-transform: uppercase; color: var(--text-3);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
    BOOT SEQUENCE — four-phase terminal initialization
    01 power activation · 02 insignia reconstruction · 03 terminal
    initialization · 04 command center deployment.
@@ -941,11 +978,17 @@ html[data-theme="archive"] .boot-overlay {
 
 .boot-emblem-mark {
   position: relative; z-index: 1;
-  width: clamp(96px, 13vw, 152px);
-  opacity: 0; transform: scale(0.86); filter: saturate(0.4);
-  transition: opacity 0.8s ease-out, transform 1.1s cubic-bezier(0.16, 0.84, 0.3, 1), filter 1s ease-out;
+  width: clamp(184px, 19vw, 264px);
+  opacity: 0; transform: scale(0.86);
+  transition: opacity 0.8s ease-out, transform 1.1s cubic-bezier(0.16, 0.84, 0.3, 1);
 }
-.boot-emblem-mark svg { width: 100%; height: auto; display: block; }
+.boot-emblem-mark .rhodes-logo {
+  width: 100%; height: auto;
+  /* mounted-display edge + restrained cyan bloom, as the reticle passes behind */
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 38%, transparent),
+    0 0 40px color-mix(in srgb, var(--accent) 16%, transparent);
+}
 .boot-overlay:not([data-stage="0"]) .boot-emblem-mark {
   opacity: 1; transform: scale(1); filter: none;
 }
@@ -1098,6 +1141,7 @@ html[data-theme="archive"] .boot-seg[data-on="1"] {
   .boot-core { gap: 10px; }
   .boot-wordmark { font-size: clamp(30px, 4.6vw, 44px); }
   .boot-sub { font-size: 9px; letter-spacing: 0.24em; }
+  .boot-emblem-mark { width: 74%; }   /* stays inside the smaller reticle */
   .boot-tag { padding: 5px 8px; }
   .boot-tag-val { font-size: 13px; }
 }
@@ -1177,8 +1221,11 @@ html[data-theme="archive"] .boot-seg[data-on="1"] {
 .identity-ring-outer { width: min(96%, 540px); opacity: 0.35; }
 
 /* the insignia scales with the stage so it stays the focal point at any width */
-.identity-insignia { position: relative; z-index: 2; width: clamp(136px, 21cqw, 178px); }
-.identity-insignia svg { width: 100%; height: auto; display: block; }
+.identity-insignia { position: relative; z-index: 2; width: clamp(196px, 30cqw, 268px); }
+.identity-insignia .rhodes-logo {
+  width: 100%; height: auto;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent);
+}
 
 .identity-lockup { position: relative; z-index: 1; text-align: center; width: 100%; max-width: 860px; }
 .identity-wordmark {
