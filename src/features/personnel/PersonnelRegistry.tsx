@@ -5,7 +5,7 @@
 // ─────────────────────────────────────────────────────────────
 import React, { useEffect, useMemo, useState } from "react";
 import { Mail, Pencil, Phone, Plus, Search, Trash2, UserRound, X } from "lucide-react";
-import { Badge, Button, ConfirmDialog, Empty, Field, Modal, Panel, Reveal } from "@/components/ui";
+import { Badge, Button, ConfirmDialog, Empty, Field, Modal, PageHeader, Panel, Reveal } from "@/components/ui";
 import { useAppData } from "@/hooks/store";
 import { useToast } from "@/components/toast";
 import type { Route } from "@/layout/AppShell";
@@ -38,14 +38,12 @@ export function PersonnelRegistry({ navigate }: { navigate: (r: Route) => void }
 
   return (
     <div style={{ display: "grid", gap: 24 }}>
-      <Reveal>
-        <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", flexWrap: "wrap", gap: 16, borderBottom: "2px solid var(--border-soft)", paddingBottom: 16 }}>
-          <div>
-            <div className="mono" style={{ color: "var(--accent)", fontSize: 12, letterSpacing: "0.2em", marginBottom: 8, background: "var(--accent-dim)", display: "inline-block", padding: "4px 8px", border: "1px solid var(--accent)" }}>// PERSONNEL ARCHIVE · {data.personnel.length} REGISTERED</div>
-            <h1 style={{ fontFamily: "var(--font-display)", fontSize: 56, fontWeight: 700, margin: 0, lineHeight: 1, letterSpacing: "0.02em" }}>Personnel Registry</h1>
-          </div>
-          <Button variant="primary" size="lg" style={{ height: 48, padding: "0 32px", fontSize: 14 }} icon={<Plus size={16} />} onClick={() => setForm("new")}>Register Person</Button>
-        </div>
+            <Reveal>
+        <PageHeader
+          eyebrow={`// PERSONNEL ARCHIVE · ${data.personnel.length} REGISTERED`}
+          title="Personnel Registry"
+          actions={<Button variant="primary" size="lg" style={{ height: 48, padding: "0 32px", fontSize: 14 }} icon={<Plus size={16} />} onClick={() => setForm("new")}>Register Person</Button>}
+        />
       </Reveal>
 
       <Reveal delay={0.06}>

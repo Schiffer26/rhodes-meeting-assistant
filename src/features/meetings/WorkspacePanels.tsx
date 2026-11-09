@@ -22,7 +22,7 @@ import { ActionItemFormModal } from "@/features/tasks/ActionItemForm";
 
 // ── helpers ──────────────────────────────────────────────────
 const sel = (v: string, onChange: (v: string) => void, options: [string, string][], label: string) => (
-  <select className="select" style={{ height: 30, padding: "3px 26px 3px 9px", fontSize: "var(--fs-small)" }}
+  <select className="select" style={{ height: 30, width: 116, flex: "0 0 auto", padding: "3px 24px 3px 9px", fontSize: "var(--fs-small)" }}
     value={v} onChange={(e) => onChange(e.target.value)} aria-label={label}>
     {options.map(([val, lab]) => <option key={val} value={val}>{lab}</option>)}
   </select>
@@ -637,7 +637,7 @@ export function QuickCaptureRail({ meeting }: { meeting: Meeting }) {
           <Button size="sm" variant="primary" style={{ height: 32 }} onClick={submit}>Log</Button>
         </div>
         <span className="mono" style={{ fontSize: 8.5, letterSpacing: "0.14em", color: "var(--text-3)" }}>
-          NOTES APPEND WITH TIMESTAMP · DECISIONS OPEN AS PROPOSED
+          TIMESTAMPED APPEND · DECISIONS OPEN AS PROPOSED
         </span>
       </div>
     </Panel>

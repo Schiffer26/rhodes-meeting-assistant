@@ -1,11 +1,14 @@
 // ─────────────────────────────────────────────────────────────
-// RHODES · application shell — sidebar, top bar, global search
+// RHODES · application shell
+// Operational system toolbar (HUD), global search, notifications,
+// keyboard shortcuts. The HUD is a solid graphite instrument bar
+// in both themes so the interface reads as equipment, not a page.
 // ─────────────────────────────────────────────────────────────
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   LayoutDashboard, CalendarRange, Users, ListTodo, Archive, Settings, Search,
-  Sun, Moon, Monitor, Bell, Command, Clock3,
+  Sun, Moon, Monitor, Bell, Command, Clock3, Keyboard,
 } from "lucide-react";
 import { Insignia } from "@/components/Insignia";
 import { useAppData, useDerived, useMotionScale } from "@/hooks/store";
@@ -34,7 +37,7 @@ function useNow(intervalMs = 1000) {
   return now;
 }
 
-// ── Top-bar clock ─────────────────────────────────────────────
+// ── Top-bar clock ──────────────────────────────────────────────────────
 function LocalClock() {
   const now = useNow();
   const { data } = useAppData();
@@ -43,14 +46,14 @@ function LocalClock() {
   const dateStr = formatDateLong(`${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`);
   const timeStr = formatTime(`${pad(now.getHours())}:${pad(now.getMinutes())}`, s.timeFormat) + `:${pad(now.getSeconds())}`;
   return (
-    <div style={{ textAlign: "right", lineHeight: 1.25 }}>
-      <div className="mono" style={{ color: "var(--text)", fontSize: 12, letterSpacing: "0.08em" }}>{timeStr}</div>
-      <div className="mono" style={{ color: "var(--text-3)", fontSize: 9.5, letterSpacing: "0.1em" }}>{dateStr.toUpperCase()}</div>
+    <div className="hud-clock">
+      <div className="t">{timeStr}</div>
+      <div className="d">{dateStr.toUpperCase()}</div>
     </div>
   );
 }
 
-// ── Notifications popover (derived from live data) ────────────
+// ── Notifications popover (derived from live data) ─────────────────────
 function Notifications({ navigate }: { navigate: (r: Route) => void }) {
   const [open, setOpen] = useState(false);
   const { data } = useAppData();
@@ -69,49 +72,61 @@ function Notifications({ navigate }: { navigate: (r: Route) => void }) {
   const count = overdue.length + dueSoon.length + todayMeetings.length;
   const people = data.personnel;
 
+  const rowStyle: React.CSSProperties = {
+    width: "100%", background: "none", border: "none",
+    borderBottom: "1px solid var(--border-soft)", textAlign: "left",
+    cursor: "pointer", padding: "9px 14px", display: "flex", alignItems: "center", gap: 10,
+  };
+
   return (
     <div ref={ref} style={{ position: "relative" }}>
-      <button className="editor-tool" style={{ width: 34, height: 34, position: "relative" }}
+      <button className="hud-btn" style={{ position: "relative" }}
         onClick={() => setOpen((v) => !v)} aria-label={`Activity — ${count} items need attention`} title="Activity">
         <Bell size={16} />
-        {count > 0 && (
-          <span style={{ position: "absolute", top: 2, right: 2, width: 7, height: 7, background: "var(--amber)" }} />
-        )}
+        {count > 0 && <span className="hud-alert-dot" />}
       </button>
-      {open && (
-        <div className="panel" style={{ position: "absolute", right: 0, top: 42, width: 320, zIndex: 80, boxShadow: "0 16px 40px rgba(0,0,0,0.4)" }}>
-          <div className="panel-head"><span className="mono-label">Activity Feed · {String(count).padStart(2, "0")}</span></div>
-          <div style={{ maxHeight: 320, overflowY: "auto" }}>
-            {count === 0 && <div className="panel-body small dim">No items require attention. Systems nominal.</div>}
-            {todayMeetings.map((m) => (
-              <button key={m.id} className="row-line row-click" style={{ width: "100%", background: "none", border: "none", borderBottom: "1px solid var(--border-soft)", textAlign: "left", cursor: "pointer" }}
-                onClick={() => { setOpen(false); navigate({ section: "meetings", meetingId: m.id }); }}>
-                <Clock3 size={13} style={{ color: "var(--accent)", flexShrink: 0 }} />
-                <span className="small" style={{ color: "var(--text-2)" }}>Today {m.startTime} — {m.title}</span>
-              </button>
-            ))}
-            {overdue.map((t) => (
-              <button key={t.id} className="row-line row-click" style={{ width: "100%", background: "none", border: "none", borderBottom: "1px solid var(--border-soft)", textAlign: "left", cursor: "pointer" }}
-                onClick={() => { setOpen(false); navigate({ section: "tasks" }); }}>
-                <span className="dot" style={{ width: 7, height: 7, background: "var(--crit)", flexShrink: 0 }} />
-                <span className="small" style={{ color: "var(--text-2)" }}>Overdue — {t.title} ({people.find((p) => p.id === t.assigneeId)?.fullName ?? "Unassigned"})</span>
-              </button>
-            ))}
-            {dueSoon.map((t) => (
-              <button key={t.id} className="row-line row-click" style={{ width: "100%", background: "none", border: "none", borderBottom: "1px solid var(--border-soft)", textAlign: "left", cursor: "pointer" }}
-                onClick={() => { setOpen(false); navigate({ section: "tasks" }); }}>
-                <span className="dot" style={{ width: 7, height: 7, background: "var(--warn)", flexShrink: 0 }} />
-                <span className="small" style={{ color: "var(--text-2)" }}>Due soon — {t.title}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }}
+            transition={{ duration: 0.18, ease: "easeOut" }}
+            className="panel" style={{ position: "absolute", right: 0, top: 46, width: 340, zIndex: 80, boxShadow: "var(--shadow)" }}>
+            <div className="panel-head">
+              <span className="mono-label">Activity Feed</span>
+              <span className="hud-code" style={{ fontSize: 9, padding: "3px 7px" }}>{String(count).padStart(2, "0")} OPEN</span>
+            </div>
+            <div style={{ maxHeight: 340, overflowY: "auto" }}>
+              {count === 0 && <div className="panel-body small dim">No items require attention. Systems nominal.</div>}
+              {todayMeetings.map((m) => (
+                <button key={m.id} style={rowStyle}
+                  onClick={() => { setOpen(false); navigate({ section: "meetings", meetingId: m.id }); }}>
+                  <Clock3 size={13} style={{ color: "var(--accent)", flexShrink: 0 }} />
+                  <span className="small" style={{ color: "var(--text-2)" }}>Today {m.startTime} — {m.title}</span>
+                </button>
+              ))}
+              {overdue.map((t) => (
+                <button key={t.id} style={rowStyle}
+                  onClick={() => { setOpen(false); navigate({ section: "tasks" }); }}>
+                  <span style={{ width: 7, height: 7, background: "var(--crit)", flexShrink: 0 }} />
+                  <span className="small" style={{ color: "var(--text-2)" }}>Overdue — {t.title} ({people.find((p) => p.id === t.assigneeId)?.fullName ?? "Unassigned"})</span>
+                </button>
+              ))}
+              {dueSoon.map((t) => (
+                <button key={t.id} style={rowStyle}
+                  onClick={() => { setOpen(false); navigate({ section: "tasks" }); }}>
+                  <span style={{ width: 7, height: 7, background: "var(--warn)", flexShrink: 0 }} />
+                  <span className="small" style={{ color: "var(--text-2)" }}>Due soon — {t.title}</span>
+                </button>
+              ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
 
-// ── Global search palette (Ctrl+K) ────────────────────────────
+// ── Global search palette (Ctrl+K) ─────────────────────────────────────
 function GlobalSearch({ open, onClose, navigate }: { open: boolean; onClose: () => void; navigate: (r: Route) => void }) {
   const { data } = useAppData();
   const [q, setQ] = useState("");
@@ -135,7 +150,7 @@ function GlobalSearch({ open, onClose, navigate }: { open: boolean; onClose: () 
   return (
     <Modal open={open} onClose={onClose} title="Global Search" code="CTRL+K" width={640}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, border: "1px solid var(--border)", background: "var(--bg)", padding: "0 12px" }}>
-        <Search size={15} style={{ color: "var(--text-3)", flexShrink: 0 }} />
+        <Search size={15} style={{ color: "var(--accent)", flexShrink: 0 }} />
         <input ref={inputRef} value={q} onChange={(e) => setQ(e.target.value)}
           placeholder="Search meetings, personnel, tasks, decisions…"
           style={{ flex: 1, height: 40, background: "transparent", border: "none", outline: "none", color: "var(--text)", fontSize: "var(--fs-body)" }} />
@@ -202,7 +217,31 @@ function GlobalSearch({ open, onClose, navigate }: { open: boolean; onClose: () 
   );
 }
 
-// ── Shell ─────────────────────────────────────────────────────
+// ── Keyboard shortcut legend ───────────────────────────────────────────
+const SHORTCUTS: { keys: string; action: string }[] = [
+  { keys: "CTRL + K", action: "Open global search" },
+  { keys: "CTRL + N", action: "Register a new meeting" },
+  { keys: "CTRL + SHIFT + N", action: "Capture a quick note" },
+  { keys: "CTRL + S", action: "Force save to local storage" },
+  { keys: "ESC", action: "Dismiss the active dialog" },
+];
+
+function ShortcutLegend({ open, onClose }: { open: boolean; onClose: () => void }) {
+  return (
+    <Modal open={open} onClose={onClose} title="Keyboard Controls" code="SHORTCUT MAP" width={480}>
+      <div style={{ display: "grid", gap: 2 }}>
+        {SHORTCUTS.map((s) => (
+          <div key={s.keys} className="strip" style={{ borderBottom: "1px solid var(--border-soft)" }}>
+            <span className="hud-kbd" style={{ color: "var(--accent)", borderColor: "var(--accent)" }}>{s.keys}</span>
+            <span className="strip-val" style={{ flex: 1 }}>{s.action}</span>
+          </div>
+        ))}
+      </div>
+    </Modal>
+  );
+}
+
+// ── Shell ──────────────────────────────────────────────────────────────
 export function AppShell({ route, navigate, children, onQuickNote }: {
   route: Route; navigate: (r: Route) => void; children: React.ReactNode; onQuickNote: () => void;
 }) {
@@ -210,6 +249,7 @@ export function AppShell({ route, navigate, children, onQuickNote }: {
   const { overdue } = useDerived();
   const { off } = useMotionScale();
   const [searchOpen, setSearchOpen] = useState(false);
+  const [keysOpen, setKeysOpen] = useState(false);
 
   const activeId: SectionId = route.meetingId ? "meetings" : route.section;
   const active = SECTIONS.find((s) => s.id === activeId)!;
@@ -230,49 +270,47 @@ export function AppShell({ route, navigate, children, onQuickNote }: {
   const theme = data.settings.theme;
   const cycleTheme = () => updateSettings({ theme: theme === "terminal" ? "archive" : theme === "archive" ? "system" : "terminal" });
   const ThemeIcon = theme === "terminal" ? Moon : theme === "archive" ? Sun : Monitor;
+  const sectionTitle = route.meetingId ? "Meeting Workspace" : active.label;
 
   return (
     <div className="app-root" style={{ display: "flex", flexDirection: "column", height: "100vh", position: "relative" }}>
       <BackgroundEnvironment />
 
-      {/* ── Top HUD ─────────────────────────────── */}
-      <header style={{
-        height: 72, flexShrink: 0, display: "flex", alignItems: "center", gap: 16, padding: "0 24px", position: "relative", zIndex: 9,
-        background: "rgba(21, 23, 25, 0.85)", backdropFilter: "blur(24px)", borderBottom: "1px solid var(--border-soft)",
-        boxShadow: "0 4px 24px rgba(0,0,0,0.4)"
-      }}>
-        {/* Left: Branding & Core Nav */}
-        <div style={{ display: "flex", alignItems: "center", gap: 24 }}>
-          <button className="linklike" onClick={() => navigate({ section: "command" })} style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <Insignia size={32} />
-            <div style={{ textAlign: "left", lineHeight: 1.1 }}>
-              <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 18, letterSpacing: "0.1em", color: "#F5F5F5" }}>RHODES</div>
-              <div className="mono" style={{ color: "var(--text-3)", fontSize: 8.5, letterSpacing: "0.15em" }}>OPERATIONS DECK</div>
-            </div>
+      {/* ── Top HUD ─────────────────────────────────────────────── */}
+      <header className="hud">
+        {/* Left: identity + quick destinations */}
+        <div className="hud-cell" style={{ gap: 0, padding: 0 }}>
+          <button className="hud-brand" onClick={() => navigate({ section: "command" })} aria-label="RHODES — Command Center">
+            <span style={{
+              display: "grid", placeItems: "center", width: 38, height: 38,
+              background: "var(--accent)", flexShrink: 0,
+            }}>
+              <Insignia size={24} accent="#0E1012" fg="#0E1012" />
+            </span>
+            <span>
+              <span className="hud-wordmark" style={{ display: "block" }}>RHODES</span>
+              <span className="hud-sub" style={{ display: "block" }}>OPERATIONS DECK</span>
+            </span>
           </button>
-          <div style={{ width: 1, height: 24, background: "var(--border)" }} />
-          <button className="editor-tool" style={{ width: 34, height: 34 }} title="Dashboard" onClick={() => navigate({ section: "command" })}><LayoutDashboard size={18} color="#F5F5F5" /></button>
-          <button className="editor-tool" style={{ width: 34, height: 34 }} title="Settings" onClick={() => navigate({ section: "settings" })}><Settings size={18} color="#F5F5F5" /></button>
+          <div className="hud-sep" />
+          <div style={{ display: "flex", gap: 4, paddingLeft: 10 }}>
+            <button className="hud-btn" style={{ width: 38, height: 38 }} title="Command Center" aria-label="Command Center"
+              onClick={() => navigate({ section: "command" })}><LayoutDashboard size={17} /></button>
+            <button className="hud-btn" style={{ width: 38, height: 38 }} title="System Configuration" aria-label="System Configuration"
+              onClick={() => navigate({ section: "settings" })}><Settings size={17} /></button>
+          </div>
         </div>
 
-        {/* Center: Context */}
-        <div style={{ flex: 1, display: "flex", justifyContent: "center", alignItems: "center", gap: 12, minWidth: 0 }}>
-          <span className="mono" style={{ color: "var(--accent)", fontSize: 10, letterSpacing: "0.2em", background: "var(--accent-dim)", padding: "4px 8px", border: "1px solid var(--accent)" }}>{active.code}</span>
-          <span style={{ fontFamily: "var(--font-display)", fontSize: 24, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--text)" }}>
-            {route.meetingId ? "Meeting Workspace" : active.label}
-          </span>
+        {/* Center: active section identity */}
+        <div className="hud-cell" style={{ flex: 1, minWidth: 0, gap: 14 }}>
+          <span className="hud-code">{active.code}</span>
+          <span className="hud-title">{sectionTitle}</span>
+          <span style={{ flex: 1, height: 1, background: "var(--hud-line)", minWidth: 20 }} />
         </div>
 
-        {/* Right: Tools & Status */}
-        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-          <button onClick={() => setSearchOpen(true)}
-            style={{
-              display: "flex", alignItems: "center", gap: 9, height: 36, padding: "0 16px", background: "rgba(0,0,0,0.6)", border: "1px solid var(--border)",
-              cursor: "pointer", color: "var(--text-3)", transition: "border-color 140ms linear, background 140ms linear",
-              clipPath: "polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 0 100%)"
-            }}
-            onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--accent)"; e.currentTarget.style.background = "var(--accent-dim)"; e.currentTarget.style.color = "var(--accent)"; }}
-            onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.background = "rgba(0,0,0,0.6)"; e.currentTarget.style.color = "var(--text-3)"; }}>
+        {/* Right: tools & status */}
+        <div className="hud-cell" style={{ gap: 12 }}>
+          <button className="hud-search" onClick={() => setSearchOpen(true)} aria-label="Open global search">
             <Search size={13} />
             <span className="mono" style={{ display: "inline-flex", alignItems: "center", gap: 2, fontSize: 9 }}>
               <Command size={9} /> K
@@ -280,27 +318,28 @@ export function AppShell({ route, navigate, children, onQuickNote }: {
           </button>
 
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <SaveIndicator state={saveState} />
+            <span style={{ color: "var(--hud-dim)" }}><SaveIndicator state={saveState} /></span>
             <Notifications navigate={navigate} />
+            <button className="hud-btn" style={{ width: 34, height: 34 }} onClick={() => setKeysOpen(true)}
+              title="Keyboard controls" aria-label="Keyboard controls"><Keyboard size={16} /></button>
           </div>
 
-          <div style={{ width: 1, height: 24, background: "var(--border)" }} />
+          <div className="hud-sep" style={{ height: 34, alignSelf: "center", margin: 0 }} />
           <LocalClock />
 
-          <button className="editor-tool" style={{ width: 34, height: 34 }} onClick={cycleTheme}
-            title="Cycle theme" aria-label="Cycle theme">
-            <ThemeIcon size={16} color="#F5F5F5" />
+          <button className="hud-btn" onClick={cycleTheme} title="Cycle theme" aria-label="Cycle theme">
+            <ThemeIcon size={16} />
           </button>
         </div>
       </header>
 
-      {/* ── Main content area ─────────────────────────── */}
-      {/* ── Main content area ─────────────────────────── */}
+      {/* ── Main content area ───────────────────────────────────── */}
       <main style={{ flex: 1, overflowY: "auto", position: "relative", zIndex: 1 }}>
-        <div style={{ padding: "32px 40px", maxWidth: 1600, margin: "0 auto", minHeight: "calc(100vh - 72px)" }}>{children}</div>
+        <div style={{ padding: "20px 32px 28px", maxWidth: 1600, margin: "0 auto", minHeight: "calc(100vh - 68px)" }}>{children}</div>
       </main>
 
       <GlobalSearch open={searchOpen} onClose={() => setSearchOpen(false)} navigate={navigate} />
+      <ShortcutLegend open={keysOpen} onClose={() => setKeysOpen(false)} />
     </div>
   );
 }

@@ -6,7 +6,7 @@ import React, { useEffect, useRef, useState } from "react";
 import {
   Cpu, Database, FileDown, FileUp, HardDrive, Monitor, Moon, RotateCcw, Sun, Trash2,
 } from "lucide-react";
-import { Button, ConfirmDialog, Panel, Reveal, Stagger, StaggerItem } from "@/components/ui";
+import { Button, ConfirmDialog, PageHeader, Panel, Reveal, Stagger, StaggerItem } from "@/components/ui";
 import { useAppData } from "@/hooks/store";
 import { useToast } from "@/components/toast";
 import { storage } from "@/services/storage";
@@ -65,10 +65,7 @@ export function SystemConfiguration() {
   return (
     <div style={{ display: "grid", gap: 24 }}>
       <Reveal>
-        <div style={{ borderBottom: "2px solid var(--border-soft)", paddingBottom: 16 }}>
-          <div className="mono" style={{ color: "var(--accent)", fontSize: 12, letterSpacing: "0.2em", marginBottom: 8, background: "var(--accent-dim)", display: "inline-block", padding: "4px 8px", border: "1px solid var(--accent)" }}>// LOCAL TERMINAL · CONFIGURATION SECTOR</div>
-          <h1 style={{ fontFamily: "var(--font-display)", fontSize: 56, fontWeight: 700, margin: 0, lineHeight: 1, letterSpacing: "0.02em" }}>System Configuration</h1>
-        </div>
+        <PageHeader eyebrow="// LOCAL TERMINAL · CONFIGURATION SECTOR" title="System Configuration" />
       </Reveal>
 
       <Stagger style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--gap)", alignItems: "start" }}>

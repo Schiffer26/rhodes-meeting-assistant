@@ -5,7 +5,7 @@
 // ─────────────────────────────────────────────────────────────
 import React, { useMemo, useState } from "react";
 import { Copy, Database, FileDown, FileText, Printer, Search } from "lucide-react";
-import { Badge, Button, Empty, Panel, Reveal } from "@/components/ui";
+import { Badge, Button, Empty, PageHeader, Panel, Reveal } from "@/components/ui";
 import { useAppData } from "@/hooks/store";
 import { useToast } from "@/components/toast";
 import { minutesPrintHtml, printHtml, MinutesBody } from "@/features/meetings/WorkspacePanels";
@@ -38,19 +38,15 @@ export function RecordsArchive({ navigate, openId }: { navigate: (r: Route) => v
   return (
     <div style={{ display: "grid", gap: 24 }}>
       <Reveal>
-        <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", flexWrap: "wrap", gap: 16, borderBottom: "2px solid var(--border-soft)", paddingBottom: 16 }}>
-          <div>
-            <div className="mono" style={{ color: "var(--accent)", fontSize: 12, letterSpacing: "0.2em", marginBottom: 8, background: "var(--accent-dim)", display: "inline-block", padding: "4px 8px", border: "1px solid var(--accent)" }}>// DOCUMENTATION VAULT · {data.meetings.length} RECORDS</div>
-            <h1 style={{ fontFamily: "var(--font-display)", fontSize: 56, fontWeight: 700, margin: 0, lineHeight: 1, letterSpacing: "0.02em" }}>Records Archive</h1>
-            <div className="mono" style={{ color: "var(--text-3)", marginTop: 12, letterSpacing: "0.1em" }}>
-              {completed} COMPLETED MEETINGS · {decisionCount} DECISIONS · {data.notes.length} NOTE FILES
-            </div>
-          </div>
-          <Button variant="secondary" size="lg" style={{ height: 48, padding: "0 32px", fontSize: 14 }} icon={<Database size={16} />} onClick={() => {
+        <PageHeader
+          eyebrow={`// DOCUMENTATION VAULT · ${data.meetings.length} RECORDS`}
+          title="Records Archive"
+          meta={`${completed} COMPLETED MEETINGS · ${decisionCount} DECISIONS · ${data.notes.length} NOTE FILES`}
+          actions={<Button variant="secondary" size="lg" style={{ height: 48, padding: "0 30px", fontSize: 13 }} icon={<Database size={16} />} onClick={() => {
             downloadFile(`rhodes-backup-${new Date().toISOString().slice(0, 10)}.json`, exportJSON(), "application/json");
             toast.success("Full data backup exported as JSON.");
-          }}>Export Backup</Button>
-        </div>
+          }}>Export Backup</Button>}
+        />
       </Reveal>
 
       <Reveal delay={0.06}>

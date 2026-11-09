@@ -1,7 +1,10 @@
 // ─────────────────────────────────────────────────────────────
 // RHODES · reusable UI primitives
-// Square-edged panels, technical labels, corner indicators —
-// one shared language for every screen.
+//
+// The design language: solid monochromatic plates, technical
+// micro-labels, selective corner cuts, high-contrast status
+// blocks. Surfaces are opaque — glass is used only for the
+// modal scrim, never for content panels.
 // ─────────────────────────────────────────────────────────────
 import React from "react";
 import { AnimatePresence, motion } from "framer-motion";
@@ -19,14 +22,27 @@ export function Corners({ color }: { color?: string }) {
   );
 }
 
+// ── Panel ───────────────────────────────────────────────────────────────
+export type PanelVariant = "solid" | "light" | "ink" | "accent" | "raised";
+
+const PANEL_CLASS: Record<PanelVariant, string> = {
+  solid: "",
+  light: "white",
+  ink: "ink",
+  accent: "accent",
+  raised: "raised",
+};
+
 export function Panel({
-  title, code, actions, children, className, bodyClass, pad = true, corners = false, accentBar = false, style
+  title, code, actions, children, className, bodyClass, pad = true, corners = false,
+  accentBar = false, variant = "solid", style,
 }: {
   title?: string; code?: string; actions?: React.ReactNode; children?: React.ReactNode;
-  className?: string; bodyClass?: string; pad?: boolean; corners?: boolean; accentBar?: boolean; style?: React.CSSProperties;
+  className?: string; bodyClass?: string; pad?: boolean; corners?: boolean;
+  accentBar?: boolean; variant?: PanelVariant; style?: React.CSSProperties;
 }) {
   return (
-    <section className={cn("panel", accentBar && "panel-accent-bar", className)} style={style}>
+    <section className={cn("panel", PANEL_CLASS[variant], accentBar && "panel-accent-bar", className)} style={style}>
       {corners && <Corners />}
       {title && (
         <header className="panel-head">
@@ -42,9 +58,11 @@ export function Panel({
   );
 }
 
-// Framer-Motion entrance wrappers honoring the motion setting
-export function Reveal({ children, delay = 0, y = 12, className, as = "div", style }: {
-  children: React.ReactNode; delay?: number; y?: number; className?: string; as?: "div" | "section"; style?: React.CSSProperties;
+// ── Motion wrappers ────────────────────────────────────────────────────
+// Framer-Motion entrance helpers honouring the motion setting.
+export function Reveal({ children, delay = 0, y = 12, x = 0, className, as = "div", style }: {
+  children: React.ReactNode; delay?: number; y?: number; x?: number;
+  className?: string; as?: "div" | "section"; style?: React.CSSProperties;
 }) {
   const { off, scale } = useMotionScale();
   const Tag = (as === "div" ? motion.div : motion.section) as typeof motion.div;
@@ -52,8 +70,8 @@ export function Reveal({ children, delay = 0, y = 12, className, as = "div", sty
   return (
     <Tag
       className={className} style={style}
-      initial={{ opacity: 0, y: y * scale }}
-      animate={{ opacity: 1, y: 0 }}
+      initial={{ opacity: 0, x: x * scale, y: y * scale }}
+      animate={{ opacity: 1, x: 0, y: 0 }}
       transition={{ duration: 0.28 * (scale || 0.45), delay: delay * scale, ease: [0.22, 0.61, 0.36, 1] }}
     >
       {children}
@@ -72,14 +90,14 @@ export function Stagger({ children, className, style }: { children: React.ReactN
   );
 }
 
-export function StaggerItem({ children, className, style }: { children: React.ReactNode; className?: string; style?: React.CSSProperties }) {
+export function StaggerItem({ children, className, style, x = 0 }: { children: React.ReactNode; className?: string; style?: React.CSSProperties; x?: number }) {
   const { off, scale } = useMotionScale();
   if (off) return <div className={className} style={style}>{children}</div>;
   return (
     <motion.div className={className} style={style}
       variants={{
-        hidden: { opacity: 0, y: 10 * scale },
-        show: { opacity: 1, y: 0, transition: { duration: 0.24 * (scale || 0.45), ease: [0.22, 0.61, 0.36, 1] } },
+        hidden: { opacity: 0, x: x * scale, y: 10 * scale },
+        show: { opacity: 1, x: 0, y: 0, transition: { duration: 0.24 * (scale || 0.45), ease: [0.22, 0.61, 0.36, 1] } },
       }}>
       {children}
     </motion.div>
@@ -102,7 +120,8 @@ export function ScanWipe({ children, wipeKey, className }: { children: React.Rea
   );
 }
 
-type BtnVariant = "primary" | "secondary" | "ghost" | "danger";
+// ── Button ─────────────────────────────────────────────────────────────
+type BtnVariant = "primary" | "secondary" | "ghost" | "danger" | "outline";
 export function Button({
   variant = "secondary", size, loading, icon, children, className, ...rest
 }: React.ButtonHTMLAttributes<HTMLButtonElement> & {
@@ -110,7 +129,8 @@ export function Button({
 }) {
   return (
     <button className={cn("btn", variant === "primary" && "btn-primary", variant === "danger" && "btn-danger",
-      variant === "ghost" && "btn-ghost", size === "sm" && "btn-sm", size === "lg" && "btn-lg", className)}
+      variant === "ghost" && "btn-ghost", variant === "outline" && "btn-outline",
+      size === "sm" && "btn-sm", size === "lg" && "btn-lg", className)}
       disabled={loading || rest.disabled} {...rest}>
       {loading ? <Loader2 size={14} className="spin" /> : icon}
       {children}
@@ -118,6 +138,7 @@ export function Button({
   );
 }
 
+// ── Field ──────────────────────────────────────────────────────────────
 export function Field({ label, required, error, hint, children, inline }: {
   label: string; required?: boolean; error?: string; hint?: string; children: React.ReactNode; inline?: boolean;
 }) {
@@ -133,41 +154,91 @@ export function Field({ label, required, error, hint, children, inline }: {
   );
 }
 
-export function Badge({ tone = "gray", dot = true, children, className }: {
-  tone?: string; dot?: boolean; children: React.ReactNode; className?: string;
+// ── Badge ──────────────────────────────────────────────────────────────
+const TONE_COLOR: Record<string, string> = {
+  cyan: "var(--accent)", green: "var(--ok)", amber: "var(--warn)",
+  red: "var(--crit)", yellow: "var(--amber)", gray: "var(--text-3)",
+};
+
+export function Badge({ tone = "gray", dot = true, solid = false, children, className }: {
+  tone?: string; dot?: boolean; solid?: boolean; children: React.ReactNode; className?: string;
 }) {
-  const dotColor =
-    tone === "cyan" ? "var(--accent)" : tone === "green" ? "var(--ok)" : tone === "amber" ? "var(--warn)"
-    : tone === "red" ? "var(--crit)" : tone === "yellow" ? "var(--amber)" : "var(--text-3)";
+  const dotColor = TONE_COLOR[tone] ?? "var(--text-3)";
   return (
-    <span className={cn("badge", `badge-${tone}`, className)}>
-      {dot && <span className={cn("dot", tone === "yellow" && "pulse")} style={{ background: dotColor }} />}
+    <span className={cn("badge", `badge-${tone}`, solid && "badge-solid", className)}>
+      {dot && !solid && <span className={cn("dot", tone === "yellow" && "pulse")} style={{ background: dotColor }} />}
       {children}
     </span>
   );
 }
 
+// ── Status indicator ───────────────────────────────────────────────────
+export function StatusChip({ tone = "gray", label }: { tone?: string; label: string }) {
+  return (
+    <span className="badge" style={{ gap: 8 }}>
+      <span style={{ width: 8, height: 8, background: TONE_COLOR[tone] ?? "var(--text-3)", flex: "none" }} />
+      <span style={{ color: "var(--text-2)" }}>{label}</span>
+    </span>
+  );
+}
+
+// ── Save indicator ─────────────────────────────────────────────────────
 export function SaveIndicator({ state }: { state: "idle" | "saving" | "saved" | "error" }) {
   const label = state === "saving" ? "Saving…" : state === "saved" ? "Saved" : state === "error" ? "Save failed — retry" : "Standby";
   return <span className={cn("save-ind", state)}><span className="sq" />{label}</span>;
 }
 
+// ── Metric block ───────────────────────────────────────────────────────
+export function StatBlock({ label, value, tone, sub, variant = "solid" }: {
+  label: string; value: React.ReactNode; tone?: string; sub?: string; variant?: PanelVariant;
+}) {
+  const color = tone ? (TONE_COLOR[tone] ?? "var(--text)") : "var(--text)";
+  return (
+    <div className={cn("panel", PANEL_CLASS[variant])} style={{ padding: "12px 14px" }}>
+      <div className="mono-label">{label}</div>
+      <div className="metric-value" style={{ marginTop: 6, fontSize: "var(--fs-section)", color }}>{value}</div>
+      {sub && <div className="mono" style={{ fontSize: 9, letterSpacing: "0.12em", color: "var(--text-3)", marginTop: 4 }}>{sub}</div>}
+    </div>
+  );
+}
+
+// ── Page masthead ──────────────────────────────────────────────────────
+export function PageHeader({ eyebrow, title, meta, actions }: {
+  eyebrow: string; title: string; meta?: string; actions?: React.ReactNode;
+}) {
+  return (
+    <div className="masthead">
+      <div>
+        <span className="masthead-eyebrow">{eyebrow}</span>
+        <h1 className="masthead-title">{title}</h1>
+        {meta && <div className="masthead-meta">{meta}</div>}
+      </div>
+      {actions}
+    </div>
+  );
+}
+
+// ── Empty state ────────────────────────────────────────────────────────
 export function Empty({ icon, title, hint, action }: {
   icon?: React.ReactNode; title: string; hint?: string; action?: React.ReactNode;
 }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, padding: "38px 20px", textAlign: "center" }}>
-      <div style={{ width: 44, height: 44, border: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-3)" }}>
+      <div className="clip-corner-sm" style={{
+        width: 46, height: 46, border: "1px solid var(--border)", display: "flex",
+        alignItems: "center", justifyContent: "center", color: "var(--text-3)",
+        background: "var(--surface-2)",
+      }}>
         {icon}
       </div>
-      <span className="mono-label">{title}</span>
-      {hint && <span className="small dim" style={{ maxWidth: 320 }}>{hint}</span>}
+      <span className="mono-label" style={{ color: "var(--text-2)" }}>{title}</span>
+      {hint && <span className="small dim" style={{ maxWidth: 340 }}>{hint}</span>}
       {action}
     </div>
   );
 }
 
-// ── Modal ────────────────────────────────────────────────────
+// ── Modal ──────────────────────────────────────────────────────────────
 export function Modal({ open, onClose, title, code, width = 620, children, footer }: {
   open: boolean; onClose: () => void; title: string; code?: string; width?: number;
   children: React.ReactNode; footer?: React.ReactNode;
@@ -187,7 +258,7 @@ export function Modal({ open, onClose, title, code, width = 620, children, foote
           initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
           transition={{ duration: off ? 0 : 0.18 }}
           onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-          <motion.div className="modal-panel" style={{ width, maxWidth: "100%" }}
+          <motion.div className="modal-panel clip-corner-sm" style={{ width, maxWidth: "100%" }}
             initial={off ? undefined : { opacity: 0, y: 14 * scale, scale: 0.995 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={off ? undefined : { opacity: 0, y: 8 * scale }}

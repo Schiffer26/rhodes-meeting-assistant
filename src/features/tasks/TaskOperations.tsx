@@ -5,7 +5,7 @@
 // ─────────────────────────────────────────────────────────────
 import React, { useMemo, useState } from "react";
 import { ArrowDownWideNarrow, ArrowUpNarrowWide, Columns3, LayoutList, Plus, Search, Trash2, Pencil } from "lucide-react";
-import { Badge, Button, ConfirmDialog, Empty, Panel, Reveal } from "@/components/ui";
+import { Badge, Button, ConfirmDialog, Empty, PageHeader, Panel, Reveal } from "@/components/ui";
 import { useAppData } from "@/hooks/store";
 import { useToast } from "@/components/toast";
 import { useUi } from "@/hooks/ui";
@@ -88,13 +88,11 @@ export function TaskOperations({ navigate }: { navigate: (r: Route) => void }) {
   return (
     <div style={{ display: "grid", gap: 24 }}>
       <Reveal>
-        <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", flexWrap: "wrap", gap: 16, borderBottom: "2px solid var(--border-soft)", paddingBottom: 16 }}>
-          <div>
-            <div className="mono" style={{ color: "var(--accent)", fontSize: 12, letterSpacing: "0.2em", marginBottom: 8, background: "var(--accent-dim)", display: "inline-block", padding: "4px 8px", border: "1px solid var(--accent)" }}>// RESPONSIBILITY TRACKING · {counts.all} TOTAL</div>
-            <h1 style={{ fontFamily: "var(--font-display)", fontSize: 56, fontWeight: 700, margin: 0, lineHeight: 1, letterSpacing: "0.02em" }}>Task Operations</h1>
-          </div>
-          <Button variant="primary" size="lg" style={{ height: 48, padding: "0 32px", fontSize: 14 }} icon={<Plus size={16} />} onClick={() => ui.openTaskForm()}>Add Action Item</Button>
-        </div>
+        <PageHeader
+          eyebrow={`// RESPONSIBILITY TRACKING · ${counts.all} TOTAL`}
+          title="Task Operations"
+          actions={<Button variant="primary" size="lg" style={{ height: 48, padding: "0 30px", fontSize: 13 }} icon={<Plus size={16} />} onClick={() => ui.openTaskForm()}>Add Action Item</Button>}
+        />
       </Reveal>
 
       <Reveal delay={0.06}>

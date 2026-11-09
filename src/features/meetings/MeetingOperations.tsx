@@ -6,7 +6,7 @@ import {
   Plus, Search, LayoutList, CalendarDays, ChevronLeft, ChevronRight,
   Pencil, Trash2, MapPin, Users, ArrowRight,
 } from "lucide-react";
-import { Badge, Button, ConfirmDialog, Empty, Panel, Reveal } from "@/components/ui";
+import { Badge, Button, ConfirmDialog, Empty, PageHeader, Panel, Reveal } from "@/components/ui";
 import { useAppData } from "@/hooks/store";
 import { useToast } from "@/components/toast";
 import { useUi } from "@/hooks/ui";
@@ -109,14 +109,12 @@ export function MeetingOperations({ navigate }: { navigate: (r: Route) => void }
 
   return (
     <div style={{ display: "grid", gap: 24 }}>
-      <Reveal>
-        <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", flexWrap: "wrap", gap: 16, borderBottom: "2px solid var(--border-soft)", paddingBottom: 16 }}>
-          <div>
-            <div className="mono" style={{ color: "var(--accent)", fontSize: 12, letterSpacing: "0.2em", marginBottom: 8, background: "var(--accent-dim)", display: "inline-block", padding: "4px 8px", border: "1px solid var(--accent)" }}>// OPERATIONS DIRECTORY · {data.meetings.length} RECORDS</div>
-            <h1 style={{ fontFamily: "var(--font-display)", fontSize: 56, fontWeight: 700, margin: 0, lineHeight: 1, letterSpacing: "0.02em" }}>Meeting Operations</h1>
-          </div>
-          <Button variant="primary" size="lg" style={{ height: 48, padding: "0 32px", fontSize: 14 }} icon={<Plus size={16} />} onClick={() => ui.openMeetingForm()}>New Meeting</Button>
-        </div>
+            <Reveal>
+        <PageHeader
+          eyebrow={`// OPERATIONS DIRECTORY · ${data.meetings.length} RECORDS`}
+          title="Meeting Operations"
+          actions={<Button variant="primary" size="lg" style={{ height: 48, padding: "0 32px", fontSize: 14 }} icon={<Plus size={16} />} onClick={() => ui.openMeetingForm()}>New Meeting</Button>}
+        />
       </Reveal>
 
       {/* ── Filter bar ────────────────────────────── */}
