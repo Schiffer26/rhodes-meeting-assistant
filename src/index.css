@@ -710,6 +710,46 @@ html[data-theme="archive"] .page-backdrop-scrim {
       rgba(217, 221, 224, 0.9) 100%);
 }
 
+/* ── workspace status strip ─────────────────────────────────────────────
+   The decorative close of every section. Identical everywhere except on the
+   two artwork screens, where a feathered local scrim restores the page
+   ground behind the line and the type steps up one contrast token — the
+   text keeps its size, tracking and placement, and its opacity is only ever
+   raised, never reduced. Nothing else in the app is touched. */
+.mono.workspace-foot {
+  text-align: center;
+  font-size: 10px;
+  letter-spacing: 0.3em;
+  color: var(--text-3);
+  padding-bottom: 32px;
+}
+.workspace-foot-text { opacity: 0.55; }
+
+html .mono.workspace-foot.has-art { position: relative; isolation: isolate; }
+html .mono.workspace-foot.has-art .workspace-foot-text { opacity: 0.85; color: var(--text-2); }
+/* a soft settle sits behind the readout only on the two artwork screens: the
+   radius stops short of the box in both axes, so the gradient is already fully
+   transparent at every edge and the scrim reads as a feather, never a plate */
+html .mono.workspace-foot.has-art::before {
+  content: "";
+  position: absolute; z-index: -1; pointer-events: none;
+  left: 50%; bottom: 12px; transform: translateX(-50%);
+  width: min(100%, 980px); height: 56px;
+  background: radial-gradient(46% 50% at 50% 50%,
+    color-mix(in srgb, var(--bg) 92%, transparent) 0%,
+    color-mix(in srgb, var(--bg) 74%, transparent) 54%,
+    transparent 100%);
+}
+/* the light theme's plate base is darker than its ground, so ARCHIVE needs a
+   denser settle to keep the line at the same contrast it has elsewhere */
+html[data-theme="archive"] .mono.workspace-foot.has-art::before {
+  background: radial-gradient(46% 50% at 50% 50%,
+    color-mix(in srgb, var(--bg) 97%, transparent) 0%,
+    color-mix(in srgb, var(--bg) 93%, transparent) 30%,
+    color-mix(in srgb, var(--bg) 82%, transparent) 58%,
+    transparent 100%);
+}
+
 /* ── Ambient / environment layers ───────────────────────────────────── */
 .env-root { position: absolute; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; }
 .env-layer { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }

@@ -325,6 +325,9 @@ function Core() {
   useDocumentFlags();
 
   const [route, setRoute] = useState<Route>({ section: "command" });
+  // Meeting Operations and Personnel Registry paint their own page artwork; the
+  // closing status strip gets a local contrast treatment there and only there.
+  const hasPageArtwork = route.section === "meetings" || route.section === "personnel";
   const [booted, setBooted] = useState(false);
   const [meetingForm, setMeetingForm] = useState<{ open: boolean; meetingId: string | null }>({ open: false, meetingId: null });
   const [taskForm, setTaskForm] = useState<{ open: boolean; meetingId: string | null }>({ open: false, meetingId: null });
@@ -396,8 +399,13 @@ function Core() {
             )}
             {renderSection()}
             <div style={{ height: 48 }} />
-            <div className="mono" style={{ textAlign: "center", fontSize: 10, letterSpacing: "0.3em", color: "var(--text-3)", opacity: 0.55, paddingBottom: 32 }}>
-              RHODES OS 1.0 · {SECTIONS.find((x) => x.id === route.section)?.code ?? "R·03"} · LOCAL OPERATIONS · NO NETWORK
+            {/* Status strip. On the two screens that paint a page artwork the
+                strip keeps its own contrast (local scrim + one contrast step),
+                so the decorative line never sinks into the plate behind it. */}
+            <div className={`mono workspace-foot${hasPageArtwork ? " has-art" : ""}`}>
+              <span className="workspace-foot-text">
+                RHODES OS 1.0 · {SECTIONS.find((x) => x.id === route.section)?.code ?? "R·03"} · LOCAL OPERATIONS · NO NETWORK
+              </span>
             </div>
           </motion.div>
         </AnimatePresence>
