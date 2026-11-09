@@ -71,7 +71,7 @@ export function MeetingWorkspace({ meetingId, navigate }: { meetingId: string; n
             <div style={{ flex: "1 1 320px", minWidth: 0 }}>
               <div className="mono" style={{ color: "var(--accent)", fontSize: 11, letterSpacing: "0.15em", marginBottom: 6 }}>// MEETING WORKSPACE · {meeting.id.toUpperCase().slice(0, 12)}</div>
               <div style={{ display: "flex", alignItems: "center", gap: 16, marginTop: 4, flexWrap: "wrap" }}>
-                <h1 style={{ fontFamily: "var(--font-display)", fontSize: 40, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.02em", margin: 0, lineHeight: 1 }}>
+                <h1 className="ws-title" style={{ fontFamily: "var(--font-display)", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.02em", margin: 0, lineHeight: 1 }}>
                   {meeting.title}
                 </h1>
                 <button className="editor-tool" style={{ background: "var(--surface-2)", width: 32, height: 32 }} onClick={() => ui.openMeetingForm(meeting.id)} title="Edit meeting details" aria-label="Edit meeting details"><Pencil size={14} /></button>
@@ -123,7 +123,7 @@ export function MeetingWorkspace({ meetingId, navigate }: { meetingId: string; n
       </motion.div>
 
       {/* ── Body grid (agenda / notes follow, rail last) ── */}
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 320px", gap: 16, alignItems: "start" }}>
+      <div className="ws-grid">
         <motion.div {...stagger(1)} style={{ minWidth: 0 }}>
           <AnimatePresence mode="wait">
             <ScanWipe key={`${meeting.id}-${tab}`} wipeKey={`${meeting.id}-${tab}`}>

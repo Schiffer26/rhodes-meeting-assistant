@@ -86,7 +86,7 @@ export function OverviewPanel({ meeting }: { meeting: Meeting }) {
         </div>
       </Panel>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "var(--gap)" }}>
+      <div className="stat-grid-4">
         {[
           { l: "AGENDA PROGRESS", v: `${discussed}/${agenda.length}` },
           { l: "ACTIONS DONE", v: `${done}/${tasks.length}` },
@@ -187,7 +187,7 @@ export function AgendaPanel({ meeting }: { meeting: Meeting }) {
         <div style={{ display: "grid", gap: 14 }}>
           <Field label="Topic title" required><input className="input" value={eTitle} onChange={(e) => setETitle(e.target.value)} /></Field>
           <Field label="Description"><textarea className="textarea" style={{ minHeight: 56 }} value={eDesc} onChange={(e) => setEDesc(e.target.value)} /></Field>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 120px", gap: 12 }}>
+          <div className="form-pin">
             <Field label="Presenter / responsible">
               <select className="select" value={ePresenter} onChange={(e) => setEPresenter(e.target.value)}>
                 <option value="">— Unassigned —</option>
@@ -370,7 +370,7 @@ export function DecisionsPanel({ meeting }: { meeting: Meeting }) {
         <div style={{ display: "grid", gap: 14 }}>
           <Field label="Decision title" required><input className="input" autoFocus value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} /></Field>
           <Field label="Explanation"><textarea className="textarea" style={{ minHeight: 60 }} value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} placeholder="Rationale, constraints, context…" /></Field>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <div className="form-2">
             <Field label="Related agenda item">
               <select className="select" value={f.agendaItemId} onChange={(e) => setF({ ...f, agendaItemId: e.target.value })}>
                 <option value="">— None —</option>
@@ -473,7 +473,7 @@ export function MinutesPanel({ meeting }: { meeting: Meeting }) {
           <Button size="sm" icon={<FileDown size={13} />} onClick={() => { downloadFile(`${fileBase}.md`, effective, "text/markdown"); toast.success("Markdown exported."); }}>Export MD</Button>
           <Button size="sm" icon={<Printer size={13} />} onClick={() => printHtml(minutesPrintHtml(effective, `Meeting Minutes — ${meeting.title}`))}>Print</Button>
         </div>}>
-        <div className="panel-body" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, borderBottom: "1px solid var(--border-soft)" }}>
+        <div className="panel-body form-2" style={{ gap: 16, borderBottom: "1px solid var(--border-soft)" }}>
           <Field label="Closing notes" hint="Included verbatim in the minutes.">
             <textarea className="textarea" style={{ minHeight: 74 }} value={meeting.closingNotes}
               onChange={(e) => updateMeeting(meeting.id, { closingNotes: e.target.value })} placeholder="Summarize the outcome…" />
@@ -624,7 +624,7 @@ export function QuickCaptureRail({ meeting }: { meeting: Meeting }) {
   return (
     <Panel title="Quick Capture" code="NO NAVIGATION" pad={false}>
       <div className="panel-body" style={{ display: "grid", gap: 10 }}>
-        <div className="seg" style={{ width: "100%" }}>
+        <div className="seg" role="group" aria-label="Capture mode" style={{ width: "100%" }}>
           {([["note", "Note"], ["decision", "Decision"], ["action", "Action"]] as const).map(([k, lab]) => (
             <button key={k} className={kind === k ? "on" : ""} style={{ flex: 1 }} onClick={() => setKind(k)}>{lab}</button>
           ))}

@@ -74,17 +74,19 @@ export function PersonnelRegistry({ navigate }: { navigate: (r: Route) => void }
                 const meetingCount = data.meetings.filter((m) => m.attendeeIds.includes(p.id) || m.organizerId === p.id).length;
                 const taskCount = data.actionItems.filter((t) => t.assigneeId === p.id && t.status !== "completed").length;
                 return (
-                  <tr key={p.id} style={{ cursor: "pointer" }} onClick={() => setDetail(p)} tabIndex={0}
-                    onKeyDown={(e) => { if (e.key === "Enter") setDetail(p); }}>
+                  <tr key={p.id} className="person-row">
                     <td className="mono" style={{ color: "var(--accent)", letterSpacing: "0.1em" }}>{p.code}</td>
                     <td>
-                      <div className="small" style={{ fontWeight: 600, color: "var(--text)" }}>{p.fullName}</div>
-                      <div className="mono dim" style={{ fontSize: 9 }}>{meetingCount} MEETINGS · {taskCount} OPEN TASKS</div>
+                      <button type="button" className="row-open" onClick={() => setDetail(p)}
+                        aria-label={`Open personnel file for ${p.fullName}`}>
+                        <span className="small row-open-title" style={{ fontWeight: 600, color: "var(--text)", display: "block" }}>{p.fullName}</span>
+                        <span className="mono dim" style={{ fontSize: 9, display: "block" }}>{meetingCount} MEETINGS · {taskCount} OPEN TASKS</span>
+                      </button>
                     </td>
                     <td className="small dim-2">{p.role || "—"}</td>
                     <td><Badge tone="gray" dot={false}>{p.department || "UNASSIGNED"}</Badge></td>
                     <td className="small dim">{p.email || p.phone || "—"}</td>
-                    <td onClick={(e) => e.stopPropagation()}>
+                    <td>
                       <div style={{ display: "flex", gap: 2 }}>
                         <button className="editor-tool" onClick={() => setForm(p)} title="Edit file" aria-label={`Edit ${p.fullName}`}><Pencil size={13} /></button>
                         <button className="editor-tool" style={{ color: "var(--crit)" }} onClick={() => setConfirmDel(p)} title="Delete file" aria-label={`Delete ${p.fullName}`}><Trash2 size={13} /></button>
@@ -122,7 +124,7 @@ export function PersonnelRegistry({ navigate }: { navigate: (r: Route) => void }
           <Field label="Full name" required error={err}>
             <input className="input" autoFocus value={f.fullName} onChange={(e) => setF({ ...f, fullName: e.target.value })} />
           </Field>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <div className="form-2">
             <Field label="Position / role"><input className="input" value={f.role} onChange={(e) => setF({ ...f, role: e.target.value })} /></Field>
             <Field label="Department"><input className="input" value={f.department} onChange={(e) => setF({ ...f, department: e.target.value })} /></Field>
             <Field label="Email (optional)"><input className="input input-mono" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} placeholder="name@rhodes.local" /></Field>

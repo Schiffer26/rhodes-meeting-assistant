@@ -66,73 +66,66 @@ export function CommandCenter({ navigate }: { navigate: (r: Route) => void }) {
 
   // ── Navigation module ───────────────────────────────────────────────
   const NavTile = ({
-    title, subtitle, icon: Icon, onClick, tone = "light", size = "large", index, meta, ariaLabel,
+    title, subtitle, icon: Icon, onClick, tone = "light", size = "large", index, meta, ariaLabel, style,
   }: {
     title: string; subtitle: string; icon: any; onClick: () => void;
     tone?: "light" | "dark" | "cyan"; size?: "large" | "medium" | "small";
-    index: string; meta?: string; ariaLabel?: string;
+    index: string; meta?: string; ariaLabel?: string; style?: React.CSSProperties;
   }) => {
     const isCyan = tone === "cyan";
     const isDark = tone === "dark";
     const bg = isCyan ? "var(--accent)" : isDark ? "var(--surface-2)" : "var(--panel-white)";
     const fg = isCyan ? "#0E1012" : isDark ? "var(--text)" : "var(--text-dark)";
     const subFg = isCyan ? "rgba(14,16,18,0.72)" : isDark ? "var(--text-3)" : "rgba(23,25,27,0.58)";
-    const ruleFg = isCyan ? "#0E1012" : isDark ? "var(--accent)" : "var(--accent)";
-    const pad = size === "large" ? 24 : size === "medium" ? 18 : 14;
-    const titleSize = size === "large" ? 42 : size === "medium" ? 27 : 21;
+    const ruleFg = isCyan ? "#0E1012" : "var(--accent)";
+    const sizeClass = size === "large" ? "lg" : size === "medium" ? "md" : "sm";
 
     return (
-      <button onClick={onClick} className="nav-tile clip-corner"
+      <button
+        onClick={onClick}
+        className={`nav-tile clip-corner ${sizeClass}`}
         style={{
-          background: bg, color: fg, padding: pad, height: "100%",
-          minHeight: size === "large" ? 210 : size === "medium" ? 128 : 104,
+          background: bg, color: fg, height: "100%",
           borderColor: isDark ? "var(--border)" : "var(--border-soft)",
+          ...style,
         }}
         aria-label={ariaLabel ?? title}>
         {/* background iconography */}
         <span className="nav-bg">
-          <Icon size={size === "large" ? 190 : size === "medium" ? 130 : 96} color={fg} />
+          <Icon size={size === "large" ? 200 : size === "medium" ? 132 : 96} color={fg} />
         </span>
 
-        <span style={{ display: "flex", justifyContent: "space-between", alignItems: "center", position: "relative" }}>
+        <span style={{ display: "flex", justifyContent: "space-between", alignItems: "center", position: "relative", zIndex: 1 }}>
           <span className="nav-index" style={{ color: subFg }}>{index}</span>
           <span className="nav-arrow" style={{ color: ruleFg }}><ArrowRight size={15} /></span>
         </span>
 
-        <span style={{ flex: 1, display: "flex", alignItems: "center", position: "relative" }}>
-          <span className="module-label" style={{ fontSize: titleSize, lineHeight: 0.98 }}>{title}</span>
+        <span style={{ flex: 1, display: "flex", alignItems: "center", position: "relative", zIndex: 1, padding: "6px 0" }}>
+          <span className="nav-title">{title}</span>
         </span>
 
-        <span style={{ display: "flex", alignItems: "center", gap: 12, position: "relative" }}>
+        <span style={{ display: "flex", alignItems: "center", gap: 12, position: "relative", zIndex: 1 }}>
           <span className="nav-rule" style={{ background: ruleFg }} />
-          <span className="mono" style={{ fontSize: size === "large" ? 11 : 9.5, letterSpacing: "0.16em", color: subFg }}>{subtitle}</span>
-          {meta && (
-            <span className="mono" style={{ marginLeft: "auto", fontSize: 10, letterSpacing: "0.12em", color: fg, opacity: 0.85 }}>
-              {meta}
-            </span>
-          )}
+          <span className="nav-sub" style={{ color: subFg }}>{subtitle}</span>
+          {meta && <span className="nav-meta" style={{ color: fg }}>{meta}</span>}
         </span>
       </button>
     );
   };
 
   return (
-    <div style={{
-      display: "grid",
-      gridTemplateColumns: "minmax(248px, 286px) minmax(0, 1fr) minmax(348px, 420px)",
-      gap: "18px 20px",
-      alignItems: "stretch",
-    }}>
+    <div className="cmd-grid">
+      <h1 className="sr-only">Command Center — Rhodes Operations Deck</h1>
 
       {/* ══ LEFT — operational information ═════════════════════════ */}
       <Stagger style={{ display: "flex", flexDirection: "column", gap: 10, minWidth: 0 }}>
         {/* Priority notifications */}
-        <StaggerItem>
+        <StaggerItem x={-14}>
           <div style={{ display: "grid", gap: 6 }}>
             {overdue.length > 0 ? (
               <div className="notice notice-crit">
                 <AlertTriangle size={14} style={{ color: "var(--crit)", flexShrink: 0 }} />
-                <span style={{ flex: 1 }}>
+                <span className="notice-body">
                   <span className="n-title" style={{ color: "var(--crit)", display: "block" }}>Overdue Actions</span>
                   <span className="n-body">{overdue.length} item{overdue.length === 1 ? "" : "s"} past deadline</span>
                 </span>
@@ -141,7 +134,7 @@ export function CommandCenter({ navigate }: { navigate: (r: Route) => void }) {
             ) : (
               <div className="notice notice-ok">
                 <span style={{ width: 8, height: 8, background: "var(--ok)", flexShrink: 0 }} />
-                <span style={{ flex: 1 }}>
+                <span className="notice-body">
                   <span className="n-title" style={{ color: "var(--ok)", display: "block" }}>Task Queue Clear</span>
                   <span className="n-body">No overdue responsibilities</span>
                 </span>
@@ -152,7 +145,7 @@ export function CommandCenter({ navigate }: { navigate: (r: Route) => void }) {
             {dueSoon.length > 0 && (
               <div className="notice notice-attn">
                 <AlarmClock size={14} style={{ color: "var(--amber)", flexShrink: 0 }} />
-                <span style={{ flex: 1 }}>
+                <span className="notice-body">
                   <span className="n-title" style={{ color: "var(--amber)", display: "block" }}>Due Soon</span>
                   <span className="n-body">Within the next 72 hours</span>
                 </span>
@@ -163,7 +156,7 @@ export function CommandCenter({ navigate }: { navigate: (r: Route) => void }) {
             {inProgress.length > 0 && (
               <div className="notice notice-warn">
                 <Activity size={14} style={{ color: "var(--warn)", flexShrink: 0 }} />
-                <span style={{ flex: 1 }}>
+                <span className="notice-body">
                   <span className="n-title" style={{ color: "var(--warn)", display: "block" }}>Session Running</span>
                   <span className="n-body">{inProgress[0].title}</span>
                 </span>
@@ -175,27 +168,28 @@ export function CommandCenter({ navigate }: { navigate: (r: Route) => void }) {
         </StaggerItem>
 
         {/* Upcoming schedule — light information plate */}
-        <StaggerItem>
-          <div className="plate clip-corner" style={{ padding: "12px 15px", borderLeft: "4px solid var(--accent)" }}>
+        <StaggerItem x={-14}>
+          <div className="plate clip-corner" style={{ padding: "12px 16px", borderLeft: "4px solid var(--accent)", marginRight: -22, position: "relative", zIndex: 3, boxShadow: "var(--shadow)" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
               <span className="mono-label" style={{ color: "rgba(23,25,27,0.6)" }}>// Upcoming Schedule</span>
               <span className="mono" style={{ fontSize: 9, letterSpacing: "0.16em", color: "rgba(23,25,27,0.45)" }}>T+72H</span>
             </div>
-            <div className="metric-value" style={{ fontSize: 36, color: "var(--text-dark)", margin: "3px 0 8px" }}>
+            <div className="metric-value rail-metric" style={{ color: "var(--text-dark)" }}>
               {String(upcoming.length).padStart(2, "0")}
             </div>
             <div style={{ height: 1, background: "var(--plate-line)" }} />
-            <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+            <div className="rail-rows">
               {upcoming.slice(0, 3).map((m) => (
-                <div key={m.id} style={{ display: "flex", gap: 10, alignItems: "baseline", cursor: "pointer" }}
-                  onClick={() => navigate({ section: "meetings", meetingId: m.id })}>
+                <button key={m.id} type="button" className="mini-row"
+                  onClick={() => navigate({ section: "meetings", meetingId: m.id })}
+                  aria-label={`Open ${m.title}`}>
                   <span className="mono" style={{ fontSize: 10.5, color: "var(--accent-blue)", flexShrink: 0, letterSpacing: "0.06em" }}>
                     {formatTime(m.startTime, s.timeFormat)}
                   </span>
-                  <span className="small" style={{ color: "var(--text-dark)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  <span className="small" style={{ color: "var(--text-dark)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", flex: 1, minWidth: 0 }}>
                     {m.title}
                   </span>
-                </div>
+                </button>
               ))}
               {upcoming.length === 0 && <span className="small" style={{ color: "rgba(23,25,27,0.55)" }}>Schedule clear.</span>}
             </div>
@@ -203,29 +197,30 @@ export function CommandCenter({ navigate }: { navigate: (r: Route) => void }) {
         </StaggerItem>
 
         {/* Urgent action items — dark industrial plate */}
-        <StaggerItem>
-          <div className="panel ink clip-corner" style={{ borderLeft: "4px solid var(--crit)", padding: "12px 15px" }}>
+        <StaggerItem x={-14}>
+          <div className="panel ink clip-corner rail-panel" style={{ borderLeft: "4px solid var(--crit)" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
               <span className="mono-label" style={{ color: "var(--crit)" }}>// Urgent Actions</span>
-              <span className="mono" style={{ fontSize: 9, letterSpacing: "0.16em", color: "var(--text-3)" }}>
+              <span className="mono rail-count" style={{ fontSize: 9, letterSpacing: "0.16em", color: "var(--text-3)" }}>
                 {String(followUps.length).padStart(2, "0")} TRACKED
               </span>
             </div>
-            <div className="metric-value" style={{ fontSize: 36, color: "var(--text)", margin: "3px 0 8px" }}>
+            <div className="metric-value rail-metric" style={{ color: "var(--text)" }}>
               {String(overdue.length + dueSoon.length).padStart(2, "0")}
             </div>
             <div style={{ height: 1, background: "var(--border-soft)" }} />
-            <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+            <div className="rail-rows">
               {followUps.map((t) => (
-                <div key={t.id} style={{ display: "flex", gap: 10, alignItems: "baseline", cursor: "pointer" }}
-                  onClick={() => navigate({ section: "tasks" })}>
+                <button key={t.id} type="button" className="mini-row"
+                  onClick={() => navigate({ section: "tasks" })}
+                  aria-label={`Open task registry for ${t.title}`}>
                   <span className="mono" style={{ fontSize: 10.5, color: isTaskOverdue(t) ? "var(--crit)" : "var(--warn)", flexShrink: 0 }}>
                     {daysUntil(t.dueDate) === 0 ? "TDY" : daysUntil(t.dueDate) < 0 ? `−${Math.abs(daysUntil(t.dueDate))}D` : `+${daysUntil(t.dueDate)}D`}
                   </span>
-                  <span className="small" style={{ color: "var(--text-2)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  <span className="small" style={{ color: "var(--text-2)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", flex: 1, minWidth: 0 }}>
                     {t.title}
                   </span>
-                </div>
+                </button>
               ))}
               {followUps.length === 0 && <span className="small dim">No priority follow-ups.</span>}
             </div>
@@ -233,7 +228,7 @@ export function CommandCenter({ navigate }: { navigate: (r: Route) => void }) {
         </StaggerItem>
 
         {/* Recent activity */}
-        <StaggerItem style={{ marginTop: "auto" }}>
+        <StaggerItem x={-14} style={{ marginTop: "auto" }}>
           <div className="panel clip-corner-bottom" style={{ padding: 0, overflow: "hidden" }}>
             <div style={{ background: "var(--surface-2)", padding: "7px 13px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <span className="mono-label" style={{ color: "var(--text)" }}>Recent Activity</span>
@@ -241,8 +236,10 @@ export function CommandCenter({ navigate }: { navigate: (r: Route) => void }) {
             </div>
             <div>
               {recent.slice(0, 3).map((m) => (
-                <div key={m.id} className="row-line row-click" style={{ padding: "5px 13px", background: "none", border: "none", display: "flex", alignItems: "center", gap: 9, cursor: "pointer", width: "100%", textAlign: "left" }}
-                  onClick={() => navigate({ section: "meetings", meetingId: m.id })}>
+                <button key={m.id} type="button" className="row-line row-click rail-activity-row"
+                  style={{ background: "none", border: "none", display: "flex", alignItems: "center", gap: 9, cursor: "pointer", width: "100%", textAlign: "left", font: "inherit", color: "inherit" }}
+                  onClick={() => navigate({ section: "meetings", meetingId: m.id })}
+                  aria-label={`Open ${m.title}`}>
                   <FileText size={12} style={{ color: "var(--text-3)", flexShrink: 0 }} />
                   <span className="small" style={{ flex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{m.title}</span>
                   <span className="mono" style={{
@@ -250,7 +247,7 @@ export function CommandCenter({ navigate }: { navigate: (r: Route) => void }) {
                     padding: "2px 5px", border: "1px solid currentColor", opacity: 0.92,
                     color: TONE_VAR[MEETING_STATUS[m.status].tone] ?? "var(--text-3)",
                   }}>{STATUS_CODE[m.status] ?? MEETING_STATUS[m.status].label}</span>
-                </div>
+                </button>
               ))}
               {recent.length === 0 && <div className="panel-body small dim">No records yet.</div>}
             </div>
@@ -283,8 +280,19 @@ export function CommandCenter({ navigate }: { navigate: (r: Route) => void }) {
               {Array.from({ length: 14 }, (_, i) => <i key={i} />)}
             </div>
 
+            <span className="insignia-mount" />
+            <span className="insignia-horizon" />
             <div className="reticle" style={{ width: 296, height: 296, opacity: 0.18 }} />
             <div className="reticle" style={{ width: 392, height: 392, opacity: 0.09 }} />
+            {/* instrument rings — slow, and still under reduced motion */}
+            <svg className="ring-slow" width="330" height="330" viewBox="0 0 330 330" style={{ position: "absolute", opacity: 0.5 }}>
+              <circle cx="165" cy="165" r="152" fill="none" stroke="var(--accent)" strokeWidth="1" strokeDasharray="2 26" opacity="0.55" />
+              <circle cx="165" cy="13" r="2.5" fill="var(--accent)" />
+            </svg>
+            <svg className="ring-slow-rev" width="424" height="424" viewBox="0 0 424 424" style={{ position: "absolute", opacity: 0.35 }}>
+              <circle cx="212" cy="212" r="198" fill="none" stroke="var(--border)" strokeWidth="1" strokeDasharray="34 18" opacity="0.7" />
+              <circle cx="212" cy="14" r="2" fill="var(--border)" />
+            </svg>
 
             <div style={{ position: "relative", zIndex: 2 }}>
               <Insignia size={148} accent="var(--accent)" fg="var(--text)" />
@@ -293,7 +301,7 @@ export function CommandCenter({ navigate }: { navigate: (r: Route) => void }) {
 
           <div style={{ textAlign: "center", position: "relative", zIndex: 1 }}>
             <div className="module-label" style={{ fontSize: 54, letterSpacing: "0.26em", lineHeight: 1, marginRight: "-0.26em", color: "var(--text)" }}>RHODES</div>
-            <div className="mono" style={{ color: "var(--accent)", fontSize: 11.5, letterSpacing: "0.34em", marginTop: 10 }}>
+            <div className="mono identity-sub" style={{ fontSize: 11.5, letterSpacing: "0.34em", marginTop: 10 }}>
               MEETING OPERATIONS TERMINAL
             </div>
             <div className="tick-rule" style={{ margin: "16px auto 0", width: 240 }} />
@@ -324,7 +332,7 @@ export function CommandCenter({ navigate }: { navigate: (r: Route) => void }) {
 
       {/* ══ RIGHT — navigation modules ═════════════════════════════ */}
       <Stagger style={{ display: "flex", flexDirection: "column", gap: 10, minWidth: 0 }}>
-        <StaggerItem style={{ flex: "2 1 0" }}>
+        <StaggerItem x={16} style={{ flex: "2 1 0" }}>
           <NavTile
             title="Meeting Operations"
             subtitle="SCHEDULE & COORDINATION"
@@ -337,8 +345,8 @@ export function CommandCenter({ navigate }: { navigate: (r: Route) => void }) {
           />
         </StaggerItem>
 
-        <StaggerItem style={{ flex: "1 1 0" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, height: "100%" }}>
+        <StaggerItem x={16} style={{ flex: "1 1 0" }}>
+          <div className="nav-pair">
             <NavTile
               title="Personnel"
               subtitle="REGISTRY"
@@ -363,7 +371,7 @@ export function CommandCenter({ navigate }: { navigate: (r: Route) => void }) {
           </div>
         </StaggerItem>
 
-        <StaggerItem style={{ flex: "1.1 1 0" }}>
+        <StaggerItem x={16} style={{ flex: "1.1 1 0" }}>
           <NavTile
             title="Records Archive"
             subtitle="HISTORICAL DOCUMENTATION"
@@ -376,7 +384,7 @@ export function CommandCenter({ navigate }: { navigate: (r: Route) => void }) {
           />
         </StaggerItem>
 
-        <StaggerItem style={{ flex: "1.25 1 0" }}>
+        <StaggerItem x={16} style={{ flex: "1.25 1 0", marginTop: -14, position: "relative", zIndex: 2 }}>
           <NavTile
             title="New Meeting"
             subtitle="COMMENCE BRIEFING"
@@ -391,13 +399,13 @@ export function CommandCenter({ navigate }: { navigate: (r: Route) => void }) {
 
       {/* ══ BOTTOM — recent records ════════════════════════════════ */}
       <Reveal delay={0.14} style={{ gridColumn: "1 / -1" }}>
-        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 2.1fr) minmax(260px, 1fr)", gap: 22, alignItems: "start" }}>
+        <div className="cmd-bottom">
           <Panel title="Recent Records" code={`${recent.length} OF ${data.meetings.length} · MOST RECENTLY TOUCHED`} pad={false} className="clip-corner-bottom">
             {recent.length === 0 && <Empty icon={<FileText size={18} />} title="No records on file" hint="Register the first meeting to begin the operational log." />}
             {recent.map((m) => (
-              <div key={m.id} className="strip" role="button" tabIndex={0} style={{ cursor: "pointer" }}
+              <button key={m.id} type="button" className="strip strip-btn"
                 onClick={() => navigate({ section: "meetings", meetingId: m.id })}
-                onKeyDown={(e) => { if (e.key === "Enter") navigate({ section: "meetings", meetingId: m.id }); }}>
+                aria-label={`Open ${m.title}`}>
                 <span className="strip-key" style={{ color: "var(--accent)", minWidth: 88 }}>{formatDate(m.date, s.dateFormat)}</span>
                 <span style={{ flex: 1, minWidth: 0 }}>
                   <span className="small" style={{ fontWeight: 600, color: "var(--text)", display: "block", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
@@ -418,7 +426,7 @@ export function CommandCenter({ navigate }: { navigate: (r: Route) => void }) {
                 </span>
                 <Badge tone={MEETING_STATUS[m.status].tone} dot={false}>{MEETING_STATUS[m.status].label}</Badge>
                 <span className="nav-arrow" style={{ color: "var(--accent)" }}><ArrowRight size={14} /></span>
-              </div>
+              </button>
             ))}
           </Panel>
 

@@ -64,6 +64,8 @@
   --env-beam-hi: #2E353D;
   --env-glass: #0B1116;
   --env-sky: #16303C;
+  --env-sea: #0A141A;
+  --env-horizon: #2E5B69;
   --env-line: #2A3138;
   --env-rivet: #394149;
   --env-cyan: #00BFEA;
@@ -135,6 +137,8 @@ html[data-theme="archive"] {
   --env-beam-hi: #C4CACF;
   --env-glass: #E9EDEF;
   --env-sky: #F4F8FA;
+  --env-sea: #AFBFC7;
+  --env-horizon: #7CA0AF;
   --env-line: #929A9F;
   --env-rivet: #868E94;
   --env-cyan: #009FCB;
@@ -320,8 +324,51 @@ html[data-theme="archive"] .panel { box-shadow: var(--shadow-sm); }
 .notice-attn { border-left-color: var(--amber); }
 .notice-crit { border-left-color: var(--crit); }
 .notice-ok { border-left-color: var(--ok); }
-.notice .n-title { font-family: var(--font-mono); font-size: var(--fs-mono); letter-spacing: 0.14em; text-transform: uppercase; line-height: 1.25; }
-.notice .n-body { font-size: var(--fs-small); color: var(--text-2); line-height: 1.25; display: block; }
+.notice .n-title { font-family: var(--font-mono); font-size: var(--fs-mono); letter-spacing: 0.14em; text-transform: uppercase; line-height: 1.25; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.notice .n-body { font-size: var(--fs-small); color: var(--text-2); line-height: 1.25; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.notice-body { flex: 1; min-width: 0; }
+
+/* responsive layout utilities (breakpoints can't touch inline styles) */
+.form-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.form-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+.form-pin { display: grid; grid-template-columns: 1fr 120px; gap: 12px; }
+.stat-grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--gap); align-items: start; }
+.stat-grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--gap); }
+.page-split { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap); align-items: start; }
+.page-split-wide { display: grid; grid-template-columns: 1.2fr 1fr; gap: 20px; }
+.theme-pick { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.nav-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; height: 100%; }
+.cmd-bottom { display: grid; grid-template-columns: minmax(0, 2.1fr) minmax(260px, 1fr); gap: 22px; align-items: start; }
+
+@media (max-width: 1220px) {
+  .stat-grid-4 { grid-template-columns: repeat(2, 1fr); }
+  .theme-pick { grid-template-columns: 1fr; }
+  .ws-title { font-size: 28px; }
+  .rail-count { display: none; }
+}
+@media (max-width: 1120px) {
+  .stat-grid-3 { grid-template-columns: repeat(2, 1fr); }
+  .form-3 { grid-template-columns: 1fr 1fr; }
+  .cmd-bottom { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 1024px) {
+  .page-split, .page-split-wide { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* left-rail rhythm — defaults, then compressed on short viewports */
+.rail-plate, .rail-panel { padding: 12px 15px; }
+.rail-metric { font-size: 36px; line-height: 1; margin: 3px 0 8px; }
+.rail-rows { margin-top: 10px; display: grid; gap: 8px; }
+.rail-activity-row { padding: 5px 13px; }
+
+/* compact rail rows: schedule entries, priority actions */
+.mini-row {
+  display: flex; align-items: baseline; gap: 10px; width: 100%; min-width: 0;
+  padding: 0; background: none; border: none; font: inherit; color: inherit;
+  text-align: left; cursor: pointer;
+}
+.mini-row:hover > span:last-child { text-decoration: underline; text-underline-offset: 2px; }
+.mono-label { white-space: nowrap; }
 
 /* ── Information strips (horizontal record rows) ─────────────────────── */
 .strip {
@@ -772,3 +819,204 @@ html[data-motion="off"] .pulse { animation: none !important; }
   margin: 10px 0 0; line-height: 0.95; letter-spacing: 0.02em; text-transform: uppercase;
 }
 .masthead-meta { font-family: var(--font-mono); font-size: 11px; color: var(--text-3); letter-spacing: 0.1em; margin-top: 10px; }
+
+/* ═══════════════════════════════════════════════════════════════════
+   RHODES 1.3 — environment depth, composition, responsive, a11y
+
+   Layer classes used by BackgroundEnvironment to separate planes by
+   blur and pointer parallax. Everything degrades to a still frame
+   under the reduced and off motion preferences.
+   ═══════════════════════════════════════════════════════════════════ */
+
+.env-depth {
+  position: absolute; inset: 0;
+  will-change: transform;
+  transition: transform 260ms cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+/* far plane drifts against the pointer, near plane with it */
+.env-depth-far  { transform: translate3d(calc(var(--px, 0) * -7px), calc(var(--py, 0) * -5px), 0); }
+.env-depth-mid  { transform: translate3d(calc(var(--px, 0) *  3px), calc(var(--py, 0) *  2px), 0); }
+.env-depth-near { transform: translate3d(calc(var(--px, 0) * 12px), calc(var(--py, 0) *  7px), 0); }
+
+/* depth of field — the far exterior and near silhouettes fall out of focus */
+.env-blur-far  { filter: blur(1.7px) saturate(0.92); }
+.env-blur-near { filter: blur(1.3px); }
+
+html[data-motion="reduced"] .env-depth,
+html[data-motion="off"] .env-depth { transform: none; }
+html[data-motion="reduced"] .env-blur-far,
+html[data-motion="reduced"] .env-blur-near { filter: none; }
+
+/* ── Command center grid ────────────────────────────────────────── */
+.cmd-grid {
+  display: grid;
+  gap: 18px 20px;
+  align-items: stretch;
+  grid-template-columns: minmax(248px, 286px) minmax(0, 1fr) minmax(348px, 420px);
+}
+
+/* Navigation modules: sizing lives here so breakpoints can scale it. */
+.nav-tile { border-radius: 0; }
+.nav-tile.lg { padding: 24px; min-height: 232px; }
+.nav-tile.md { padding: 17px; min-height: 132px; }
+.nav-tile.sm { padding: 13px; min-height: 104px; }
+.nav-tile .nav-title {
+  font-family: var(--font-display); font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.005em; line-height: 0.96; display: block;
+}
+.nav-tile.lg .nav-title { font-size: clamp(28px, 2.9vw, 44px); }
+.nav-tile.md .nav-title { font-size: clamp(19px, 1.9vw, 28px); }
+.nav-tile.sm .nav-title { font-size: clamp(15px, 1.45vw, 21px); }
+.nav-tile .nav-sub {
+  font-family: var(--font-mono); letter-spacing: 0.16em; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+  padding-right: 20px; /* keep the ellipsis clear of the clipped corner */
+}
+.nav-tile.lg .nav-sub { font-size: 11px; }
+.nav-tile.md .nav-sub, .nav-tile.sm .nav-sub { font-size: 9px; }
+.nav-tile .nav-meta {
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.12em;
+  margin-left: auto; flex-shrink: 0;
+}
+
+/* hover: a diagonal sheen sweeps the slab, never on the active press */
+.nav-tile::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(115deg, transparent 34%, rgba(255, 255, 255, 0.16) 46%, transparent 58%);
+  transform: translateX(-120%);
+  transition: transform 520ms cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+.nav-tile:hover::after { transform: translateX(120%); }
+html[data-motion="off"] .nav-tile::after,
+html[data-motion="reduced"] .nav-tile::after { display: none; }
+
+/* ── Identity mount (centre column) ─────────────────────────────── */
+.insignia-mount {
+  position: absolute; left: 50%; bottom: 18%;
+  width: min(90%, 460px); height: 74px;
+  transform: translateX(-50%);
+  background: radial-gradient(50% 50% at 50% 50%, var(--accent) 0%, transparent 72%);
+  opacity: 0.13; pointer-events: none;
+}
+.insignia-horizon {
+  position: absolute; left: 8%; right: 8%; bottom: 26%; height: 1px;
+  background: linear-gradient(90deg, transparent, var(--border) 22%, var(--border) 78%, transparent);
+  pointer-events: none;
+}
+.ring-slow { animation: rhSpin 96s linear infinite; }
+.ring-slow-rev { animation: rhSpin 140s linear infinite reverse; }
+html[data-motion="reduced"] .ring-slow,
+html[data-motion="reduced"] .ring-slow-rev,
+html[data-motion="off"] .ring-slow,
+html[data-motion="off"] .ring-slow-rev { animation: none; }
+@keyframes rhSpin { to { transform: rotate(360deg); } }
+
+/* ── Accessible list affordances ────────────────────────────────── */
+.row-open {
+  display: block; width: 100%; text-align: left; cursor: pointer;
+  background: none; border: none; padding: 0; font: inherit; color: inherit;
+}
+.row-open:hover .row-open-title { color: var(--accent); }
+.row-open-title { transition: color 130ms linear; }
+
+/* calendar chips become real buttons */
+button.cal-chip {
+  width: 100%; text-align: left; cursor: pointer; font: inherit;
+  border-left-style: solid; border-left-width: 2px;
+}
+
+/* record ribbon buttons — full-width strips that behave like buttons */
+.strip-btn {
+  width: 100%; background: none; border: none; font: inherit; color: inherit;
+  cursor: pointer; text-align: left;
+}
+.strip-btn:hover { background: var(--surface-2); }
+.strip-btn:focus-visible { outline-offset: -2px; }
+
+/* primary layout grids (defined here so media queries can reach them) */
+.archive-grid { display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: var(--gap); align-items: start; }
+.ws-grid { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 16px; align-items: start; }
+.ws-title { font-size: clamp(24px, 2.9vw, 40px); }
+
+/* archive index / record rows */
+.record-row {
+  display: block; width: 100%; text-align: left; cursor: pointer;
+  background: none; border: none; font: inherit; color: inherit;
+}
+
+/* ── Focus visibility ───────────────────────────────────────────── */
+:where(button, a, [role="button"], [role="tab"], [tabindex], input, select, textarea, .row-open):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.hud :where(button, [tabindex]):focus-visible { outline-offset: -3px; }
+.nav-tile:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+.skip-link {
+  position: absolute; left: 12px; top: -60px; z-index: 300;
+  padding: 8px 14px; background: var(--accent); color: #0E1012;
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase;
+  transition: top 140ms linear;
+}
+.skip-link:focus { top: 10px; }
+
+/* ── Responsive: smaller desktop windows ────────────────────────── */
+@media (max-width: 1340px) {
+  .hud-title { font-size: 20px; }
+  .masthead-title { font-size: 46px; }
+  .cmd-grid { gap: 16px 18px; grid-template-columns: minmax(232px, 262px) minmax(0, 1fr) minmax(322px, 378px); }
+  .readout-val { font-size: 17px; }
+}
+
+@media (max-width: 1220px) {
+  .hud-title { font-size: 18px; }
+  .hud-sub { display: none; }
+  .masthead-title { font-size: 40px; }
+  .masthead-eyebrow { font-size: 10px; letter-spacing: 0.16em; }
+  .cmd-grid { gap: 14px 16px; grid-template-columns: minmax(208px, 228px) minmax(0, 1fr) minmax(276px, 314px); }
+  .hud-kbd-opt { display: none; }
+  .nav-tile .nav-meta { display: none; }
+  .readout { grid-template-columns: 1fr 1fr; }
+  .readout-cell:nth-child(2) { border-right: none; }
+  .readout-cell:nth-child(-n+2) { border-bottom: 1px solid var(--border-soft); }
+  .archive-grid { grid-template-columns: 286px minmax(0, 1fr); }
+  .ws-grid { grid-template-columns: minmax(0, 1fr) 300px; }
+}
+
+@media (max-width: 1120px) {
+  .hud-code { font-size: 9px; padding: 4px 7px; }
+  .hud-opt { display: none; }          /* secondary icon shortcuts; modules remain */
+  .cmd-grid { gap: 12px 14px; grid-template-columns: minmax(224px, 236px) minmax(0, 1fr) minmax(248px, 272px); }
+  .nav-tile.lg { padding: 18px; min-height: 196px; }
+  .nav-tile.md { padding: 14px; }
+  .nav-tile .nav-meta { display: none; }
+  .archive-grid { grid-template-columns: 252px minmax(0, 1fr); }
+  .masthead-title { font-size: 36px; }
+  .ws-grid { grid-template-columns: minmax(0, 1fr) 272px; }
+}
+
+/* short viewports: keep the whole composition on one screen */
+@media (max-height: 800px) {
+  .rail-plate, .rail-panel { padding: 9px 13px; }
+  .rail-metric { font-size: 30px; margin: 2px 0 6px; }
+  .rail-rows { margin-top: 7px; gap: 5px; }
+  .rail-activity-row { padding: 4px 12px; }
+  .notice { padding: 5px 11px; }
+  .cmd-grid { gap: 10px 14px; }
+  .nav-tile.lg { min-height: 176px; padding: 16px; }
+  .nav-tile.md { min-height: 118px; padding: 13px; }
+  .nav-tile.sm { min-height: 96px; padding: 12px; }
+  .viewport { padding: 16px 12px; }
+  .readout-cell { padding: 8px 11px; }
+  .readout-val { font-size: 15px; }
+  .masthead-title { font-size: 40px; }
+  .masthead { padding-bottom: 10px; }
+}
+
+/* identity subtitle legibility on the light archive glazing */
+.identity-sub { color: var(--accent); }
+[data-theme="archive"] .identity-sub { color: #00708C; }
+.rail-count { white-space: nowrap; flex-shrink: 0; }

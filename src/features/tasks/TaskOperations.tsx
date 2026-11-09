@@ -118,12 +118,12 @@ export function TaskOperations({ navigate }: { navigate: (r: Route) => void }) {
                 <option value="">All meetings</option>
                 {data.meetings.map((m) => <option key={m.id} value={m.id}>{m.title}</option>)}
               </select>
-              <button className="btn btn-sm" onClick={() => setSortAsc(!sortAsc)} title="Sort by deadline">
+              <button className="btn btn-sm" onClick={() => setSortAsc(!sortAsc)} title="Sort by deadline" aria-label={sortAsc ? "Sort by deadline, soonest first" : "Sort by deadline, latest first"}>
                 {sortAsc ? <ArrowUpNarrowWide size={13} /> : <ArrowDownWideNarrow size={13} />} Deadline
               </button>
-              <div className="seg" aria-label="View mode">
-                <button className={view === "list" ? "on" : ""} onClick={() => setView("list")}><LayoutList size={12} /></button>
-                <button className={view === "board" ? "on" : ""} onClick={() => setView("board")}><Columns3 size={12} /></button>
+              <div className="seg" role="group" aria-label="View mode">
+                <button className={view === "list" ? "on" : ""} onClick={() => setView("list")} aria-label="List view" aria-pressed={view === "list"}><LayoutList size={12} /></button>
+                <button className={view === "board" ? "on" : ""} onClick={() => setView("board")} aria-label="Board view" aria-pressed={view === "board"}><Columns3 size={12} /></button>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 7, border: "1px solid var(--border)", background: "var(--bg)", padding: "0 9px", height: 30 }}>
                 <Search size={12} style={{ color: "var(--text-3)" }} />
@@ -143,7 +143,7 @@ export function TaskOperations({ navigate }: { navigate: (r: Route) => void }) {
           </Panel>
         </Reveal>
       ) : (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "var(--gap)", alignItems: "start" }}>
+        <div className="stat-grid-3">
           {(["pending", "in-progress", "completed"] as TaskStatus[]).map((st, ci) => {
             const col = filtered.filter((t) => t.status === st);
             return (

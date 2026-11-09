@@ -59,11 +59,12 @@ function CalendarView({ meetings, onOpen }: { meetings: Meeting[]; onOpen: (id: 
                   {String(d.getDate()).padStart(2, "0")}
                 </div>
                 {dayMeetings.slice(0, 3).map((m) => (
-                  <div key={m.id} className="cal-chip" onClick={() => onOpen(m.id)}
+                  <button key={m.id} type="button" className="cal-chip" onClick={() => onOpen(m.id)}
+                    aria-label={`Open ${m.title}`}
                     style={{ borderLeftColor: m.status === "cancelled" ? "var(--text-3)" : m.status === "completed" ? "var(--ok)" : "var(--accent)" }}
                     title={`${m.startTime} — ${m.title}`}>
                     {m.startTime} {m.title}
-                  </div>
+                  </button>
                 ))}
                 {dayMeetings.length > 3 && <div className="mono dim" style={{ fontSize: 9, marginTop: 3 }}>+{dayMeetings.length - 3} MORE</div>}
               </div>
@@ -130,7 +131,7 @@ export function MeetingOperations({ navigate }: { navigate: (r: Route) => void }
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8, border: "1px solid var(--border)", background: "var(--bg)", padding: "0 10px", height: 32, flex: "0 1 260px", marginLeft: "auto" }}>
               <Search size={13} style={{ color: "var(--text-3)", flexShrink: 0 }} />
-              <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search meetings…"
+              <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search meetings…" aria-label="Search meetings"
                 style={{ flex: 1, background: "transparent", border: "none", outline: "none", color: "var(--text)", fontSize: "var(--fs-small)" }} />
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -138,7 +139,7 @@ export function MeetingOperations({ navigate }: { navigate: (r: Route) => void }
               <input type="date" className="input input-mono" style={{ height: 32, padding: "4px 8px", width: 150 }} value={dateFrom}
                 onChange={(e) => setDateFrom(e.target.value)} aria-label="Filter from date" />
             </div>
-            <div className="seg" aria-label="View mode">
+            <div className="seg" role="group" aria-label="View mode">
               <button className={view === "list" ? "on" : ""} onClick={() => setView("list")} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><LayoutList size={12} /> List</button>
               <button className={view === "calendar" ? "on" : ""} onClick={() => setView("calendar")} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><CalendarDays size={12} /> Calendar</button>
             </div>
@@ -162,13 +163,13 @@ export function MeetingOperations({ navigate }: { navigate: (r: Route) => void }
               {filtered.map((m) => {
                 const org = data.personnel.find((p) => p.id === m.organizerId);
                 return (
-                  <div key={m.id} className="row-line row-click" role="button" tabIndex={0}
-                    onClick={() => navigate({ section: "meetings", meetingId: m.id })}
-                    onKeyDown={(e) => { if (e.key === "Enter") navigate({ section: "meetings", meetingId: m.id }); }}
-                    style={{ cursor: "pointer" }}>
+                  <div key={m.id} className="row-line meeting-row">
                     <span style={{ width: 3, alignSelf: "stretch", background: MEETING_STATUS[m.status].tone === "cyan" ? "var(--accent)" : MEETING_STATUS[m.status].tone === "green" ? "var(--ok)" : MEETING_STATUS[m.status].tone === "yellow" ? "var(--amber)" : "var(--border)", flexShrink: 0 }} />
                     <div style={{ flex: "1 1 300px", minWidth: 0 }}>
-                      <div className="small" style={{ fontWeight: 600, color: "var(--text)" }}>{m.title}</div>
+                      <button type="button" className="row-open" onClick={() => navigate({ section: "meetings", meetingId: m.id })}
+                        aria-label={`Open ${m.title} workspace`}>
+                        <span className="small row-open-title" style={{ fontWeight: 600, color: "var(--text)", display: "block" }}>{m.title}</span>
+                      </button>
                       <div className="mono" style={{ fontSize: 10, color: "var(--text-3)", marginTop: 2, display: "flex", gap: 14, flexWrap: "wrap" }}>
                         <span>{formatDate(m.date, data.settings.dateFormat)} · {formatTime(m.startTime, data.settings.timeFormat)}—{formatTime(m.endTime, data.settings.timeFormat)}</span>
                         {m.location && <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><MapPin size={10} />{m.location}</span>}
@@ -179,7 +180,7 @@ export function MeetingOperations({ navigate }: { navigate: (r: Route) => void }
                       <div style={{ marginTop: 2 }}>ORG · {org ? org.fullName.toUpperCase().slice(0, 16) : "—"}</div>
                     </div>
                     <Badge tone={MEETING_STATUS[m.status].tone}>{MEETING_STATUS[m.status].label}</Badge>
-                    <div style={{ display: "flex", gap: 4 }} onClick={(e) => e.stopPropagation()}>
+                    <div style={{ display: "flex", gap: 4 }}>
                       <button className="editor-tool" title="Edit meeting" aria-label={`Edit ${m.title}`}
                         onClick={() => ui.openMeetingForm(m.id)}><Pencil size={13} /></button>
                       <button className="editor-tool" title="Delete meeting" aria-label={`Delete ${m.title}`}

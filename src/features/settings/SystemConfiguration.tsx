@@ -68,11 +68,11 @@ export function SystemConfiguration() {
         <PageHeader eyebrow="// LOCAL TERMINAL · CONFIGURATION SECTOR" title="System Configuration" />
       </Reveal>
 
-      <Stagger style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--gap)", alignItems: "start" }}>
+      <Stagger className="page-split">
         {/* ── Appearance ─────────────────────────── */}
         <StaggerItem>
           <Panel title="Appearance" code="DISPLAY" corners>
-            <div style={{ display: "flex", gap: 10 }}>
+            <div className="theme-pick">
               {themeCard("terminal", "TERMINAL", "Dark operations display", <Moon size={17} />)}
               {themeCard("archive", "ARCHIVE", "Light documentation display", <Sun size={17} />)}
               {themeCard("system", "SYSTEM", "Follow operating system", <Monitor size={17} />)}
@@ -110,7 +110,7 @@ export function SystemConfiguration() {
         {/* ── Interface ─────────────────────────── */}
         <StaggerItem>
           <Panel title="Interface" code="READING PROFILE">
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+            <div className="form-2" style={{ gap: 14 }}>
               <label className="field">
                 <span className="field-label">Font size</span>
                 <select className="select" value={s.fontSize} onChange={(e) => updateSettings({ fontSize: e.target.value as FontSize })}>
@@ -160,7 +160,7 @@ export function SystemConfiguration() {
                 </div>
               </div>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, padding: 16 }}>
+            <div className="form-2" style={{ gap: 10, padding: 16 }}>
               <Button icon={<FileDown size={13} />} onClick={() => {
                 downloadFile(`rhodes-backup-${new Date().toISOString().slice(0, 10)}.json`, exportJSON(), "application/json");
                 toast.success("Backup exported.");
@@ -191,7 +191,7 @@ export function SystemConfiguration() {
       {/* ── Application ─────────────────────────── */}
       <Reveal delay={0.1}>
         <Panel title="Application" code="BUILD MANIFEST" className="clip-corner-bottom">
-          <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 20 }}>
+          <div className="page-split-wide">
             <div>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <Cpu size={16} style={{ color: "var(--accent)" }} />

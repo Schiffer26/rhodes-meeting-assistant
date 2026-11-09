@@ -275,6 +275,7 @@ export function AppShell({ route, navigate, children, onQuickNote }: {
   return (
     <div className="app-root" style={{ display: "flex", flexDirection: "column", height: "100vh", position: "relative" }}>
       <BackgroundEnvironment />
+      <a className="skip-link" href="#rhodes-main">Skip to content</a>
 
       {/* ── Top HUD ─────────────────────────────────────────────── */}
       <header className="hud">
@@ -294,17 +295,19 @@ export function AppShell({ route, navigate, children, onQuickNote }: {
           </button>
           <div className="hud-sep" />
           <div style={{ display: "flex", gap: 4, paddingLeft: 10 }}>
-            <button className="hud-btn" style={{ width: 38, height: 38 }} title="Command Center" aria-label="Command Center"
+            <button className="hud-btn hud-opt" style={{ width: 38, height: 38 }} title="Command Center" aria-label="Command Center"
+              aria-current={activeId === "command" ? "page" : undefined}
               onClick={() => navigate({ section: "command" })}><LayoutDashboard size={17} /></button>
-            <button className="hud-btn" style={{ width: 38, height: 38 }} title="System Configuration" aria-label="System Configuration"
+            <button className="hud-btn hud-opt" style={{ width: 38, height: 38 }} title="System Configuration" aria-label="System Configuration"
+              aria-current={activeId === "settings" ? "page" : undefined}
               onClick={() => navigate({ section: "settings" })}><Settings size={17} /></button>
           </div>
         </div>
 
         {/* Center: active section identity */}
         <div className="hud-cell" style={{ flex: 1, minWidth: 0, gap: 14 }}>
-          <span className="hud-code">{active.code}</span>
-          <span className="hud-title">{sectionTitle}</span>
+          <span className="hud-code" aria-hidden="true">{active.code}</span>
+          <span className="hud-title" aria-live="polite">{sectionTitle}</span>
           <span style={{ flex: 1, height: 1, background: "var(--hud-line)", minWidth: 20 }} />
         </div>
 
@@ -320,7 +323,7 @@ export function AppShell({ route, navigate, children, onQuickNote }: {
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <span style={{ color: "var(--hud-dim)" }}><SaveIndicator state={saveState} /></span>
             <Notifications navigate={navigate} />
-            <button className="hud-btn" style={{ width: 34, height: 34 }} onClick={() => setKeysOpen(true)}
+            <button className="hud-btn hud-kbd-opt" style={{ width: 34, height: 34 }} onClick={() => setKeysOpen(true)}
               title="Keyboard controls" aria-label="Keyboard controls"><Keyboard size={16} /></button>
           </div>
 
@@ -334,7 +337,7 @@ export function AppShell({ route, navigate, children, onQuickNote }: {
       </header>
 
       {/* ── Main content area ───────────────────────────────────── */}
-      <main style={{ flex: 1, overflowY: "auto", position: "relative", zIndex: 1 }}>
+      <main id="rhodes-main" tabIndex={-1} style={{ flex: 1, overflowY: "auto", position: "relative", zIndex: 1 }}>
         <div style={{ padding: "20px 32px 28px", maxWidth: 1600, margin: "0 auto", minHeight: "calc(100vh - 68px)" }}>{children}</div>
       </main>
 

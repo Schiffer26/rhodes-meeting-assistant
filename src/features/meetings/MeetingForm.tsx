@@ -107,7 +107,7 @@ export function MeetingFormModal({ meetingId, open, onClose, onCreated }: {
         <Field label="Purpose">
           <textarea className="textarea" style={{ minHeight: 64 }} value={purpose} onChange={(e) => setPurpose(e.target.value)} placeholder="What should this meeting achieve?" />
         </Field>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+        <div className="form-3">
           <Field label="Date" required error={errors.date}>
             <input className="input input-mono" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
           </Field>
@@ -118,7 +118,7 @@ export function MeetingFormModal({ meetingId, open, onClose, onCreated }: {
             <input className="input input-mono" type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} />
           </Field>
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <div className="form-2">
           <Field label="Location">
             <input className="input" value={location} onChange={(e) => setLocation(e.target.value)} placeholder="e.g. Command Deck — Room C-2" />
           </Field>

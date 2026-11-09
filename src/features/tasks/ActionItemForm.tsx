@@ -70,7 +70,7 @@ export function ActionItemFormModal({ taskId, open, onClose, defaultMeetingId }:
         <Field label="Description">
           <textarea className="textarea" style={{ minHeight: 60 }} value={description} onChange={(e) => setDescription(e.target.value)} />
         </Field>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <div className="form-2">
           <Field label="Originating meeting" required>
             <select className="select" value={meetingId} onChange={(e) => { setMeetingId(e.target.value); setAgendaItemId(""); }}>
               <option value="">— Select —</option>

@@ -72,7 +72,7 @@ export function RecordsArchive({ navigate, openId }: { navigate: (r: Route) => v
         </Panel>
       </Reveal>
 
-      <div style={{ display: "grid", gridTemplateColumns: "340px minmax(0, 1fr)", gap: "var(--gap)", alignItems: "start" }}>
+      <div className="archive-grid">
         {/* ── Record index ─────────────────────── */}
         <Reveal delay={0.1}>
           <Panel title="Record Index" code="DESCENDING" pad={false} className="archive-index clip-corner-bottom">
