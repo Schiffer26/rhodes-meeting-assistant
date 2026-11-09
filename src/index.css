@@ -1020,3 +1020,7 @@ button.cal-chip {
 .identity-sub { color: var(--accent); }
 [data-theme="archive"] .identity-sub { color: #00708C; }
 .rail-count { white-space: nowrap; flex-shrink: 0; }
+
+/* workspace tab panel: focusable region, ring only for keyboard users */
+.ws-tabpanel:focus { outline: none; }
+.ws-tabpanel:focus-visible { outline: 1.5px solid var(--accent); outline-offset: 4px; }

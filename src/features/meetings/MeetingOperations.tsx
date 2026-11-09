@@ -122,9 +122,9 @@ export function MeetingOperations({ navigate }: { navigate: (r: Route) => void }
       <Reveal delay={0.06}>
         <Panel pad={false}>
           <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "10px 14px", flexWrap: "wrap" }}>
-            <div className="seg" role="tablist" aria-label="Status filter">
+            <div className="seg" role="group" aria-label="Status filter">
               {FILTERS.map((f) => (
-                <button key={f.id} role="tab" aria-selected={filter === f.id} className={filter === f.id ? "on" : ""} onClick={() => setFilter(f.id)}>
+                <button key={f.id} type="button" aria-pressed={filter === f.id} className={filter === f.id ? "on" : ""} onClick={() => setFilter(f.id)}>
                   {f.label} · {counts[f.id]}
                 </button>
               ))}
@@ -140,8 +140,8 @@ export function MeetingOperations({ navigate }: { navigate: (r: Route) => void }
                 onChange={(e) => setDateFrom(e.target.value)} aria-label="Filter from date" />
             </div>
             <div className="seg" role="group" aria-label="View mode">
-              <button className={view === "list" ? "on" : ""} onClick={() => setView("list")} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><LayoutList size={12} /> List</button>
-              <button className={view === "calendar" ? "on" : ""} onClick={() => setView("calendar")} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><CalendarDays size={12} /> Calendar</button>
+              <button type="button" className={view === "list" ? "on" : ""} aria-pressed={view === "list"} onClick={() => setView("list")} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><LayoutList size={12} /> List</button>
+              <button type="button" className={view === "calendar" ? "on" : ""} aria-pressed={view === "calendar"} onClick={() => setView("calendar")} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><CalendarDays size={12} /> Calendar</button>
             </div>
           </div>
         </Panel>

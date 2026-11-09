@@ -17,10 +17,21 @@ accents, technical micro-labels, and purposeful, controlled motion. All artwork
 
 ```bash
 npm install      # one time — installs dependencies
-npm run dev      # local development server
+npm run dev      # local development server (localhost only)
 npm run build    # production build → dist/
-npm run preview  # serve the production build
+npm run preview  # serve the production build (localhost only)
 ```
+
+The dev and preview servers bind to `localhost` and keep Vite's default host
+validation. Hosted preview containers sit behind a proxy that forwards a public
+hostname, so that case is opt-in and explicit:
+
+```bash
+RHODES_SANDBOX_PREVIEW=1 npm run dev   # bind 0.0.0.0, allow the *.e2b.app proxy host
+```
+
+Nothing is exposed unless that variable is set; unrestricted host access is
+never enabled by the default configuration.
 
 After the dependencies are installed and the project is built, RHODES runs with
 **zero network dependencies** — fonts (Oswald, Noto Sans, JetBrains Mono) are

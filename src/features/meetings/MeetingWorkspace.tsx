@@ -3,7 +3,7 @@
 // The core operational surface: header, tabbed sections,
 // attendee rail, quick capture. Staggered panel entrance.
 // ─────────────────────────────────────────────────────────────
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { ArrowLeft, CirclePlay, CircleStop, Pencil, RotateCcw } from "lucide-react";
 import { Badge, Button, Corners, Panel, SaveIndicator, ScanWipe } from "@/components/ui";
@@ -52,6 +52,29 @@ export function MeetingWorkspace({ meetingId, navigate }: { meetingId: string; n
   const counts: Record<TabId, number | null> = {
     overview: null, agenda: agenda.length, notes: null,
     decisions: decisions.length, actions: tasks.length, minutes: null,
+  };
+
+  // ── tab semantics: stable ids, roving tabIndex, arrow-key navigation
+  const tabBase = `ws-${meeting.id}`;
+  const tabIdOf = (id: TabId) => `${tabBase}-tab-${id}`;
+  const panelId = `${tabBase}-panel`; // one persistent region, content swapped per tab
+  const tabRefs = useRef<Partial<Record<TabId, HTMLButtonElement | null>>>({});
+
+  const focusTab = (id: TabId) => {
+    setTab(id);
+    // focus follows selection (automatic activation)
+    requestAnimationFrame(() => tabRefs.current[id]?.focus());
+  };
+
+  const onTabKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
+    let next = -1;
+    if (e.key === "ArrowRight") next = (index + 1) % TABS.length;
+    else if (e.key === "ArrowLeft") next = (index - 1 + TABS.length) % TABS.length;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = TABS.length - 1;
+    if (next < 0) return;
+    e.preventDefault();
+    focusTab(TABS[next].id);
   };
 
   const stagger = (i: number) => off
@@ -107,8 +130,19 @@ export function MeetingWorkspace({ meetingId, navigate }: { meetingId: string; n
 
           {/* ── Tabs ─────────────────────────────── */}
           <div className="tabs" role="tablist" aria-label="Workspace sections" style={{ padding: "0 10px" }}>
-            {TABS.map((t) => (
-              <button key={t.id} role="tab" aria-selected={tab === t.id} className={`tab ${tab === t.id ? "on" : ""}`} onClick={() => setTab(t.id)}>
+            {TABS.map((t, i) => (
+              <button
+                key={t.id}
+                type="button"
+                role="tab"
+                id={tabIdOf(t.id)}
+                aria-selected={tab === t.id}
+                aria-controls={panelId}
+                tabIndex={tab === t.id ? 0 : -1}
+                ref={(el) => { tabRefs.current[t.id] = el; }}
+                onKeyDown={(e) => onTabKeyDown(e, i)}
+                className={`tab ${tab === t.id ? "on" : ""}`}
+                onClick={() => setTab(t.id)}>
                 {t.label}
                 {counts[t.id] !== null && <span className="count">{counts[t.id]}</span>}
                 {tab === t.id && !off && (
@@ -125,16 +159,18 @@ export function MeetingWorkspace({ meetingId, navigate }: { meetingId: string; n
       {/* ── Body grid (agenda / notes follow, rail last) ── */}
       <div className="ws-grid">
         <motion.div {...stagger(1)} style={{ minWidth: 0 }}>
-          <AnimatePresence mode="wait">
-            <ScanWipe key={`${meeting.id}-${tab}`} wipeKey={`${meeting.id}-${tab}`}>
-              {tab === "overview" && <OverviewPanel meeting={meeting} />}
-              {tab === "agenda" && <AgendaPanel meeting={meeting} />}
-              {tab === "notes" && <NotesPanel meeting={meeting} />}
-              {tab === "decisions" && <DecisionsPanel meeting={meeting} />}
-              {tab === "actions" && <ActionsPanel meeting={meeting} />}
-              {tab === "minutes" && <MinutesPanel meeting={meeting} />}
-            </ScanWipe>
-          </AnimatePresence>
+          <div role="tabpanel" id={panelId} aria-labelledby={tabIdOf(tab)} tabIndex={0} className="ws-tabpanel">
+            <AnimatePresence mode="wait">
+              <ScanWipe key={`${meeting.id}-${tab}`} wipeKey={`${meeting.id}-${tab}`}>
+                {tab === "overview" && <OverviewPanel meeting={meeting} />}
+                {tab === "agenda" && <AgendaPanel meeting={meeting} />}
+                {tab === "notes" && <NotesPanel meeting={meeting} />}
+                {tab === "decisions" && <DecisionsPanel meeting={meeting} />}
+                {tab === "actions" && <ActionsPanel meeting={meeting} />}
+                {tab === "minutes" && <MinutesPanel meeting={meeting} />}
+              </ScanWipe>
+            </AnimatePresence>
+          </div>
         </motion.div>
 
         <motion.div {...stagger(2)} style={{ display: "grid", gap: 16, alignContent: "start" }}>

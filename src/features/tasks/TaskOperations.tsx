@@ -98,9 +98,9 @@ export function TaskOperations({ navigate }: { navigate: (r: Route) => void }) {
       <Reveal delay={0.06}>
         <Panel pad={false}>
           <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", flexWrap: "wrap" }}>
-            <div className="seg" role="tablist" aria-label="Task filter">
+            <div className="seg" role="group" aria-label="Task filter">
               {([["all", "All"], ["pending", "Pending"], ["in-progress", "In Progress"], ["completed", "Completed"], ["overdue", "Overdue"]] as [Tab, string][]).map(([id, lab]) => (
-                <button key={id} role="tab" aria-selected={tab === id} className={tab === id ? "on" : ""} onClick={() => setTab(id)}>
+                <button key={id} type="button" aria-pressed={tab === id} className={tab === id ? "on" : ""} onClick={() => setTab(id)}>
                   {lab} · {counts[id]}
                 </button>
               ))}
@@ -122,8 +122,8 @@ export function TaskOperations({ navigate }: { navigate: (r: Route) => void }) {
                 {sortAsc ? <ArrowUpNarrowWide size={13} /> : <ArrowDownWideNarrow size={13} />} Deadline
               </button>
               <div className="seg" role="group" aria-label="View mode">
-                <button className={view === "list" ? "on" : ""} onClick={() => setView("list")} aria-label="List view" aria-pressed={view === "list"}><LayoutList size={12} /></button>
-                <button className={view === "board" ? "on" : ""} onClick={() => setView("board")} aria-label="Board view" aria-pressed={view === "board"}><Columns3 size={12} /></button>
+                <button type="button" className={view === "list" ? "on" : ""} onClick={() => setView("list")} aria-label="List view" aria-pressed={view === "list"}><LayoutList size={12} /></button>
+                <button type="button" className={view === "board" ? "on" : ""} onClick={() => setView("board")} aria-label="Board view" aria-pressed={view === "board"}><Columns3 size={12} /></button>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 7, border: "1px solid var(--border)", background: "var(--bg)", padding: "0 9px", height: 30 }}>
                 <Search size={12} style={{ color: "var(--text-3)" }} />
