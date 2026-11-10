@@ -254,6 +254,19 @@ editor. JSON backup/restore and demo reset are store-level operations.
   only then commits to React state. Any failure leaves the existing records
   exactly as they were, and the rejection names the missing collection, invalid
   value or metadata problem.
+- **"Nothing stored" and "could not read" are different answers.**
+  `StorageAdapter.readRaw()` returns `{ ok: true, raw } | { ok: false, error }`
+  rather than a bare `string | null`, so an import can tell an absent key from a
+  failed read. A failed read cancels the import — a store that could not be read
+  is never treated as an empty one. When the key exists its exact bytes are
+  snapshotted (`pre-import`); when it is genuinely absent but records are loaded
+  in memory, those are snapshotted instead (`pre-import-memory`). If either copy
+  cannot be written the import is refused.
+- **Demo reset reports what actually happened.** `resetToDemo()` is async: it
+  persists the demonstration dataset first and only then commits it to React
+  state, returning `{ ok, error }`. The settings screen awaits it, so a failed
+  write leaves the previous records in place and shows the real error instead of
+  a success message.
 - **A failed preservation locks writing.** If the loader had to preserve the
   stored payload (records set aside or values repaired) and that preserved copy
   cannot be written, the only copy of the records is the live key — so the

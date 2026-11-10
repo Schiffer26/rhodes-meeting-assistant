@@ -71,7 +71,13 @@ export interface Store {
    * records exactly as they were.
    */
   importJSON: (json: string) => Promise<ImportResult>;
-  resetToDemo: () => { ok: boolean; error?: string };
+  /**
+   * Replace all records with the demonstration dataset.
+   *
+   * Persists first and only then commits to React state, so a failed write can
+   * never be reported as a successful reset.
+   */
+  resetToDemo: () => Promise<{ ok: boolean; error?: string }>;
   restoreDefaultSettings: () => void;
   // recovery surface (1.3.11)
   recovery: RecoveryInfo | null;
@@ -546,14 +552,43 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
         error: "This storage adapter cannot create a recovery snapshot, so the import was cancelled and the current records were left unchanged.",
       };
     }
-    const currentRaw = source.readRaw();
+
+    // 1a · distinguish "nothing stored" from "storage could not be read".
+    // A failed read must cancel the import: the records it failed to read are
+    // exactly the ones the snapshot exists to protect.
+    const read = source.readRaw();
+    if (!read.ok) {
+      return {
+        ok: false,
+        error: `The stored records could not be read (${read.error}), so the import was cancelled and nothing was changed.`,
+      };
+    }
+
     let snapshotKey: string | undefined;
-    if (currentRaw !== null) {
-      const saved = source.snapshot(currentRaw, "pre-import");
+    if (read.raw !== null) {
+      // 1b · the live payload exists — preserve its exact bytes.
+      const saved = source.snapshot(read.raw, "pre-import");
       if ("error" in saved) {
         return {
           ok: false,
           error: `Could not create a recovery snapshot (${saved.error}). The import was cancelled and the current records were left unchanged.`,
+        };
+      }
+      snapshotKey = saved.key;
+    } else {
+      // 1c · the key is genuinely absent. In-memory records may still be the only
+      // copy of what the operator is about to replace, so preserve them too.
+      if (!data) {
+        return {
+          ok: false,
+          error: "No records are loaded, so there is nothing to preserve and the import was cancelled.",
+        };
+      }
+      const saved = source.snapshot(JSON.stringify(data, null, 2), "pre-import-memory");
+      if ("error" in saved) {
+        return {
+          ok: false,
+          error: `Could not preserve the records held in memory (${saved.error}). The import was cancelled and nothing was changed.`,
         };
       }
       snapshotKey = saved.key;
@@ -578,7 +613,7 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     setData(result.data);
     setSaveState("saved");
     return { ok: true, snapshotKey, counts: result.counts };
-  }, [source]);
+  }, [source, data]);
 
   /**
    * A browser download is only an *initiation*: the page cannot verify that the
@@ -649,22 +684,36 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     return { ok: true };
   }, [source]);
 
-  const resetToDemo = useCallback((): { ok: boolean; error?: string } => {
+  const resetToDemo = useCallback(async (): Promise<{ ok: boolean; error?: string }> => {
     if (writesBlockedRef.current) {
-      return {
-        ok: false,
-        error: BLOCKED_WRITE_MESSAGE + " Nothing was changed.",
-      };
+      return { ok: false, error: BLOCKED_WRITE_MESSAGE + " Nothing was changed." };
     }
     const seed = buildSeedData();
-    // Keep operator preferences through the demo reset.
-    setData((prev) => {
-      const next = { ...seed, settings: prev ? prev.settings : seed.settings };
-      persist(next);
-      return next;
-    });
+    // Keep operator preferences through the demo reset. Computed outside any
+    // state updater: persistence is a side effect and must not run inside one.
+    const next: AppData = { ...seed, settings: data ? data.settings : seed.settings };
+
+    // A debounced write of the old records must not land after the reset.
+    if (persistTimer.current) {
+      window.clearTimeout(persistTimer.current);
+      persistTimer.current = null;
+    }
+    opCount.current += 1;   // ignore any save still in flight
+    setSaveState("saving");
+    try {
+      await source.save(next);
+    } catch (error) {
+      setSaveState("error");
+      return {
+        ok: false,
+        error: `The demonstration dataset could not be written (${error instanceof Error ? error.message : String(error)}). The existing records were left unchanged.`,
+      };
+    }
+    // Only now is the reset real.
+    setData(next);
+    setSaveState("saved");
     return { ok: true };
-  }, [persist]);
+  }, [source, data]);
 
   const restoreDefaultSettings = useCallback(() => {
     updateSettings({ ...DEFAULT_SETTINGS });

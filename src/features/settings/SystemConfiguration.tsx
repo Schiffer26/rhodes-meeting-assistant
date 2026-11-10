@@ -273,9 +273,9 @@ export function SystemConfiguration() {
       <ConfirmDialog open={confirmReset} onCancel={() => setConfirmReset(false)} title="Reset Sample Data"
         message="Replace ALL current records with the original demonstration dataset? Your interface preferences (theme, motion, formats) are preserved. This cannot be undone."
         confirmLabel="Reset Data"
-        onConfirm={() => {
+        onConfirm={async () => {
           setConfirmReset(false);
-          const res = resetToDemo();
+          const res = await resetToDemo();
           if (res.ok) { toast.success("Sample dataset restored."); refreshUsage(); }
           else toast.error(res.error ?? "The sample dataset could not be restored.");
         }} />

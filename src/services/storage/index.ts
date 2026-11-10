@@ -53,6 +53,11 @@ export interface LoadOutcome {
   recovery?: RecoveryInfo;
 }
 
+/** Result of reading the raw stored payload. */
+export type RawRead =
+  | { ok: true; raw: string | null }
+  | { ok: false; error: string };
+
 export interface StorageAdapter {
   readonly label: string;
   load(): Promise<LoadOutcome | AppData>;
@@ -71,8 +76,16 @@ export interface StorageAdapter {
   // ── optional snapshot support ────────────────────────────────
   // Optional so an injected adapter (IPC/SQLite, test double) keeps compiling;
   // operations that *require* a recovery snapshot refuse to run without it.
-  /** Raw text currently stored, or null. */
-  readRaw?(): string | null;
+  /**
+   * Raw text currently stored.
+   *
+   * An absent key and an unreadable store are deliberately different results:
+   * `{ ok: true, raw: null }` means "there is nothing stored", while
+   * `{ ok: false }` means "storage could not be read, so nobody knows". Treating
+   * the second as the first is how an import can replace records it never
+   * managed to preserve.
+   */
+  readRaw?(): RawRead;
   /** Preserve text under a separate key. */
   snapshot?(raw: string, reason: string): { key: string } | { error: string };
   snapshots?(): { key: string; bytes: number; createdAt: string; reason: string }[];
@@ -151,11 +164,11 @@ export class LocalStorageAdapter implements StorageAdapter {
     }
   }
 
-  readRaw(): string | null {
+  readRaw(): RawRead {
     try {
-      return window.localStorage.getItem(STORAGE_KEY);
-    } catch {
-      return null;
+      return { ok: true, raw: window.localStorage.getItem(STORAGE_KEY) };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
   }
 
