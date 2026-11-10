@@ -29,28 +29,28 @@ export interface Store {
   // meetings
   createMeeting: (input: MeetingInput) => Meeting;
   updateMeeting: (id: ID, patch: Partial<Meeting>) => void;
-  deleteMeeting: (id: ID) => void;
+  deleteMeeting: (id: ID) => Promise<DestructiveResult>;
   setMeetingStatus: (id: ID, status: MeetingStatus) => void;
   // agenda
   addAgendaItem: (meetingId: ID, input: { title: string; description?: string; presenterId?: ID | null; estimatedMinutes?: number }) => void;
   updateAgendaItem: (id: ID, patch: Partial<AgendaItem>) => void;
-  deleteAgendaItem: (id: ID) => void;
+  deleteAgendaItem: (id: ID) => Promise<DestructiveResult>;
   moveAgendaItem: (meetingId: ID, id: ID, dir: -1 | 1) => void;
   setAgendaStatus: (id: ID, status: AgendaStatus) => void;
   // personnel
   createPerson: (input: Omit<Person, "id" | "code" | "createdAt">) => Person;
   updatePerson: (id: ID, patch: Partial<Person>) => void;
-  deletePerson: (id: ID) => void;
+  deletePerson: (id: ID) => Promise<DestructiveResult>;
   // notes
   saveNote: (meetingId: ID, content: string) => void;
   // decisions
   createDecision: (input: { meetingId: ID; title: string; description: string; agendaItemId: ID | null; approvedBy: ID | null; decisionDate: string; status: Decision["status"] }) => void;
   updateDecision: (id: ID, patch: Partial<Decision>) => void;
-  deleteDecision: (id: ID) => void;
+  deleteDecision: (id: ID) => Promise<DestructiveResult>;
   // action items
   createActionItem: (input: { meetingId: ID; title: string; description: string; agendaItemId: ID | null; assigneeId: ID | null; dueDate: string; priority: Priority; status: TaskStatus }) => void;
   updateActionItem: (id: ID, patch: Partial<ActionItem>) => void;
-  deleteActionItem: (id: ID) => void;
+  deleteActionItem: (id: ID) => Promise<DestructiveResult>;
   setActionStatus: (id: ID, status: TaskStatus) => void;
   // attendance
   addAttendee: (meetingId: ID, personId: ID) => void;
@@ -74,10 +74,10 @@ export interface Store {
   /**
    * Replace all records with the demonstration dataset.
    *
-   * Persists first and only then commits to React state, so a failed write can
-   * never be reported as a successful reset.
+   * Preserves a recovery copy, persists first and only then commits to React
+   * state, so a failed write can never be reported as a successful reset.
    */
-  resetToDemo: () => Promise<{ ok: boolean; error?: string }>;
+  resetToDemo: () => Promise<DestructiveResult>;
   restoreDefaultSettings: () => void;
   // recovery surface (1.3.11)
   recovery: RecoveryInfo | null;
@@ -125,6 +125,20 @@ export interface ImportResult {
   counts?: Record<string, number>;
 }
 
+/**
+ * Outcome of an operation that removes records.
+ *
+ * `snapshotKey` is the recovery copy taken *before* the operation. It is
+ * reported even when the operation was refused part-way through (for example a
+ * write failure), because the copy stays in storage and is the operator's way
+ * back.
+ */
+export interface DestructiveResult {
+  ok: boolean;
+  error?: string;
+  snapshotKey?: string;
+}
+
 const Ctx = createContext<Store | null>(null);
 
 /**
@@ -135,6 +149,13 @@ const BLOCKED_WRITE_MESSAGE =
   "Writes are blocked because no verified second copy of the stored records exists yet.";
 const NO_COPY_MESSAGE =
   "A verified second copy of the stored records must exist first — save the preserved backup and confirm it to unlock writing.";
+const BUSY_MESSAGE =
+  "Another operation that removes records is still running. Nothing was changed — try again once it has finished.";
+
+/** Short, quotable form of an unknown thrown value. */
+function failureText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 /**
  * Empty but schema-valid record exposed while `ready === false`.
@@ -199,6 +220,22 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
   const hydratedOnFirstRender = useRef(bootRef.current.data !== null);
   const persistTimer = useRef<number | null>(null);
   const opCount = useRef(0);
+  /**
+   * The committed records, readable synchronously.
+   *
+   * Preservation has to describe *what the operator is looking at* before it can
+   * describe what it is about to remove, and that description is needed inside
+   * event handlers and `await` chains where `data` from the render closure may
+   * already be one render out of date. Every place that commits records updates
+   * this mirror in the same statement.
+   */
+  const dataRef = useRef<AppData | null>(bootRef.current.data);
+  /** True while a record-removing operation is running; blocks re-entry. */
+  const destructiveRef = useRef(false);
+
+  // Safety net: if any future code path commits `data` without touching the
+  // mirror, the next committed render restores it.
+  useEffect(() => { dataRef.current = data; }, [data]);
 
   /**
    * Adopt a loader outcome. Any earlier "I saved the backup" confirmation is
@@ -210,6 +247,7 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     setPreservedCopyConfirmed(false);
     setPreservedCopyDownloadStarted(false);
     setRecovery(outcome.recovery ?? null);
+    dataRef.current = outcome.data;
     setData(outcome.data);
   }, []);
 
@@ -260,16 +298,208 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     }, 280);
   }, [source]);
 
+  /**
+   * Apply a change to the records.
+   *
+   * The next document is computed from the synchronous mirror *outside* any
+   * state updater, so persistence stays a plain side effect of the handler that
+   * asked for the change rather than something React may run twice, defer or
+   * discard. A no-op transform (same object identity) writes nothing.
+   */
   const mutate = useCallback((fn: (d: AppData) => AppData) => {
     if (writesBlockedRef.current) return;   // read-only until a second copy exists
-    setData((prev) => {
-      if (!prev) return prev;
-      const next = fn(prev);
-      persist(next);
-      return next;
-    });
+    // A record-removing operation owns the document while it runs: letting a
+    // keystroke mutate underneath it would either be dropped by its write or
+    // overwrite the result it is about to commit.
+    if (destructiveRef.current) return;
+    const prev = dataRef.current;
+    if (!prev) return;
+    const next = fn(prev);
+    if (next === prev) return;              // nothing changed — no write, no render
+    dataRef.current = next;
+    setData(next);
+    persist(next);
     return { ok: true };
   }, [persist]);
+
+  /**
+   * Check that a recovery copy really reached storage.
+   *
+   * A returned key proves the adapter's own write call did not throw; when the
+   * adapter can read a snapshot back, the contents are compared too, so a
+   * "successful" snapshot that stored the wrong bytes still refuses the
+   * operation.
+   */
+  const verifySnapshot = useCallback((key: string, payload: string): { ok: true } | { ok: false; error: string } => {
+    if (source.readSnapshot) {
+      let read: string | null = null;
+      try { read = source.readSnapshot(key); } catch { read = null; }
+      if (read === null) {
+        return { ok: false, error: "The recovery snapshot could not be read back after it was written, so the operation was cancelled and nothing was changed." };
+      }
+      if (read !== payload) {
+        return { ok: false, error: "The recovery snapshot does not match the records it was meant to preserve, so the operation was cancelled and nothing was changed." };
+      }
+      return { ok: true };
+    }
+    if (source.snapshots) {
+      let list: { key: string }[] = [];
+      try { list = source.snapshots(); } catch { list = []; }
+      if (!list.some((entry) => entry.key === key)) {
+        return { ok: false, error: "The recovery snapshot is not present in the storage history, so the operation was cancelled and nothing was changed." };
+      }
+      return { ok: true };
+    }
+    // No read-back capability: the adapter's own confirmation is all that exists.
+    return { ok: true };
+  }, [source]);
+
+  /**
+   * Preserve the records that are about to be destroyed.
+   *
+   * Order is deliberate and every step can refuse:
+   *   1 · the adapter must be able to read *and* snapshot — otherwise refuse;
+   *   2 · storage must be readable. A failed read is never treated as "there is
+   *       nothing stored": that is exactly the payload the copy exists to keep;
+   *   3 · a debounced write still waiting in the queue is written first, so the
+   *       preserved copy includes the changes the operator can already see;
+   *   4 · the copy is written under a reason label;
+   *   5 · the copy is read back and compared before anything is removed.
+   */
+  const preserveBeforeDestructive = useCallback(async (
+    reason: string,
+  ): Promise<{ ok: true; snapshotKey: string; raw: string } | { ok: false; error: string }> => {
+    const current = dataRef.current;
+    if (!current) {
+      return { ok: false, error: "No records are loaded, so there is nothing to preserve and nothing was changed." };
+    }
+    if (!source.snapshot) {
+      return {
+        ok: false,
+        error: "This storage adapter cannot create a recovery snapshot, so the operation was cancelled and nothing was changed.",
+      };
+    }
+    if (!source.readRaw) {
+      return {
+        ok: false,
+        error: "This storage adapter cannot verify the stored records, so the operation was cancelled and nothing was changed.",
+      };
+    }
+
+    // A write left over from an earlier edit must not land after the snapshot or
+    // after the new document.
+    const hadPendingWrite = persistTimer.current !== null;
+    if (persistTimer.current) {
+      window.clearTimeout(persistTimer.current);
+      persistTimer.current = null;
+    }
+
+    const first = source.readRaw();
+    if (!first.ok) {
+      return {
+        ok: false,
+        error: `The stored records could not be read (${first.error}), so nothing was removed and no recovery copy was taken.`,
+      };
+    }
+
+    // The preserved copy must describe the records on screen, including changes
+    // that are still only in memory.
+    const memoryRaw = JSON.stringify(current);
+    let payload = first.raw;
+    if (payload === null || payload !== memoryRaw) {
+      try {
+        await source.save(current);
+      } catch (error) {
+        setSaveState("error");
+        return {
+          ok: false,
+          error: `The pending changes could not be written to storage (${failureText(error)}), so the operation was cancelled and nothing was changed.`,
+        };
+      }
+      const second = source.readRaw();
+      if (!second.ok) {
+        return {
+          ok: false,
+          error: `The stored records could not be read back (${second.error}), so nothing was removed and no recovery copy was taken.`,
+        };
+      }
+      payload = second.raw ?? memoryRaw;
+    }
+
+    // Everything the operator could see is on disk at this point.
+    if (hadPendingWrite) setSaveState("saved");
+
+    const saved = source.snapshot(payload, reason);
+    if ("error" in saved) {
+      return {
+        ok: false,
+        error: `Could not create a recovery copy (${saved.error}), so nothing was removed and the current records were left unchanged.`,
+      };
+    }
+
+    const verified = verifySnapshot(saved.key, payload);
+    if (!verified.ok) return { ok: false, error: verified.error };
+
+    return { ok: true, snapshotKey: saved.key, raw: payload };
+  }, [source, verifySnapshot]);
+
+  /**
+   * Run a record-removing transform: preserve → write → commit.
+   *
+   * The records only change in React state after storage has accepted the new
+   * document, so a failed write leaves the operator looking at exactly what is
+   * still stored. The recovery copy is never deleted on any path.
+   */
+  const runDestructive = useCallback(async (
+    reason: string,
+    fn: (d: AppData) => AppData,
+  ): Promise<DestructiveResult> => {
+    if (writesBlockedRef.current) {
+      return { ok: false, error: BLOCKED_WRITE_MESSAGE + " Nothing was changed." };
+    }
+    if (destructiveRef.current) {
+      return { ok: false, error: BUSY_MESSAGE };
+    }
+    const start = dataRef.current;
+    if (!start) {
+      return { ok: false, error: "No records are loaded, so nothing was changed." };
+    }
+    // Nothing to remove: do not spend a snapshot slot on an unchanged document.
+    if (fn(start) === start) return { ok: true };
+
+    destructiveRef.current = true;
+    try {
+      const preserved = await preserveBeforeDestructive(reason);
+      if (!preserved.ok) return { ok: false, error: preserved.error };
+
+      const base = dataRef.current;
+      if (!base) return { ok: false, error: "No records are loaded, so nothing was changed." };
+      const next = fn(base);
+      if (next === base) return { ok: true, snapshotKey: preserved.snapshotKey };
+
+      opCount.current += 1;   // a save still in flight must not report over this one
+      setSaveState("saving");
+      try {
+        await source.save(next);
+      } catch (error) {
+        setSaveState("error");
+        return {
+          ok: false,
+          snapshotKey: preserved.snapshotKey,
+          error:
+            `The updated records could not be written to storage (${failureText(error)}). Nothing was removed and the existing records were left unchanged. ` +
+            `A recovery copy is preserved as “${reason}”.`,
+        };
+      }
+
+      dataRef.current = next;
+      setData(next);
+      setSaveState("saved");
+      return { ok: true, snapshotKey: preserved.snapshotKey };
+    } finally {
+      destructiveRef.current = false;
+    }
+  }, [source, preserveBeforeDestructive]);
 
   const touch = (m: Meeting): Meeting => ({ ...m, updatedAt: new Date().toISOString() });
 
@@ -304,16 +534,17 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     mutate((d) => ({ ...d, meetings: d.meetings.map((m) => (m.id === id ? touch({ ...m, ...patch }) : m)) }));
   }, [mutate]);
 
-  const deleteMeeting = useCallback((id: ID) => {
-    mutate((d) => ({
+  const deleteMeeting = useCallback((id: ID) => runDestructive("pre-delete-meeting", (d) => {
+    if (!d.meetings.some((m) => m.id === id)) return d;
+    return {
       ...d,
       meetings: d.meetings.filter((m) => m.id !== id),
       agendaItems: d.agendaItems.filter((a) => a.meetingId !== id),
       notes: d.notes.filter((n) => n.meetingId !== id),
       decisions: d.decisions.filter((x) => x.meetingId !== id),
       actionItems: d.actionItems.filter((t) => t.meetingId !== id),
-    }));
-  }, [mutate]);
+    };
+  }), [runDestructive]);
 
   const setMeetingStatus = useCallback((id: ID, status: MeetingStatus) => {
     updateMeeting(id, { status });
@@ -339,9 +570,11 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     mutate((d) => ({ ...d, agendaItems: d.agendaItems.map((a) => (a.id === id ? { ...a, ...patch } : a)) }));
   }, [mutate]);
 
-  const deleteAgendaItem = useCallback((id: ID) => {
-    mutate((d) => ({ ...d, agendaItems: d.agendaItems.filter((a) => a.id !== id) }));
-  }, [mutate]);
+  const deleteAgendaItem = useCallback((id: ID) => runDestructive("pre-delete-agenda", (d) => (
+    d.agendaItems.some((a) => a.id === id)
+      ? { ...d, agendaItems: d.agendaItems.filter((a) => a.id !== id) }
+      : d
+  )), [runDestructive]);
 
   const moveAgendaItem = useCallback((meetingId: ID, id: ID, dir: -1 | 1) => {
     mutate((d) => {
@@ -376,8 +609,9 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     mutate((d) => ({ ...d, personnel: d.personnel.map((p) => (p.id === id ? { ...p, ...patch } : p)) }));
   }, [mutate]);
 
-  const deletePerson = useCallback((id: ID) => {
-    mutate((d) => ({
+  const deletePerson = useCallback((id: ID) => runDestructive("pre-delete-person", (d) => {
+    if (!d.personnel.some((p) => p.id === id)) return d;
+    return {
       ...d,
       personnel: d.personnel.filter((p) => p.id !== id),
       meetings: d.meetings.map((m) => ({
@@ -389,8 +623,8 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
       agendaItems: d.agendaItems.map((a) => (a.presenterId === id ? { ...a, presenterId: null } : a)),
       actionItems: d.actionItems.map((t) => (t.assigneeId === id ? { ...t, assigneeId: null } : t)),
       decisions: d.decisions.map((x) => (x.approvedBy === id ? { ...x, approvedBy: null } : x)),
-    }));
-  }, [mutate]);
+    };
+  }), [runDestructive]);
 
   // ── Notes (upsert) ──────────────────────────────────────────
   const saveNote = useCallback((meetingId: ID, content: string) => {
@@ -411,9 +645,11 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
   const updateDecision = useCallback((id: ID, patch: Partial<Decision>) => {
     mutate((d) => ({ ...d, decisions: d.decisions.map((x) => (x.id === id ? { ...x, ...patch } : x)) }));
   }, [mutate]);
-  const deleteDecision = useCallback((id: ID) => {
-    mutate((d) => ({ ...d, decisions: d.decisions.filter((x) => x.id !== id) }));
-  }, [mutate]);
+  const deleteDecision = useCallback((id: ID) => runDestructive("pre-delete-decision", (d) => (
+    d.decisions.some((x) => x.id === id)
+      ? { ...d, decisions: d.decisions.filter((x) => x.id !== id) }
+      : d
+  )), [runDestructive]);
 
   // ── Action items ────────────────────────────────────────────
   const createActionItem = useCallback<Store["createActionItem"]>((input) => {
@@ -423,9 +659,11 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
   const updateActionItem = useCallback((id: ID, patch: Partial<ActionItem>) => {
     mutate((d) => ({ ...d, actionItems: d.actionItems.map((t) => (t.id === id ? { ...t, ...patch, updatedAt: new Date().toISOString() } : t)) }));
   }, [mutate]);
-  const deleteActionItem = useCallback((id: ID) => {
-    mutate((d) => ({ ...d, actionItems: d.actionItems.filter((t) => t.id !== id) }));
-  }, [mutate]);
+  const deleteActionItem = useCallback((id: ID) => runDestructive("pre-delete-task", (d) => (
+    d.actionItems.some((t) => t.id === id)
+      ? { ...d, actionItems: d.actionItems.filter((t) => t.id !== id) }
+      : d
+  )), [runDestructive]);
   const setActionStatus = useCallback((id: ID, status: TaskStatus) => updateActionItem(id, { status }), [updateActionItem]);
 
   // ── Attendance ──────────────────────────────────────────────
@@ -462,27 +700,34 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
   }, [mutate]);
 
   const flush = useCallback(async (): Promise<{ ok: boolean; error?: string }> => {
-    if (!data) return { ok: false, error: "No records are loaded." };
+    const current = dataRef.current;
+    if (!current) return { ok: false, error: "No records are loaded." };
     if (writesBlockedRef.current) {
       return {
         ok: false,
         error: BLOCKED_WRITE_MESSAGE,
       };
     }
-    if (persistTimer.current) window.clearTimeout(persistTimer.current);
+    if (destructiveRef.current) {
+      return { ok: false, error: BUSY_MESSAGE };
+    }
+    if (persistTimer.current) {
+      window.clearTimeout(persistTimer.current);
+      persistTimer.current = null;
+    }
     setSaveState("saving");
     try {
-      await source.save(data);
+      await source.save(current);
       setSaveState("saved");
       return { ok: true };
     } catch (error) {
       setSaveState("error");
       return {
         ok: false,
-        error: `Could not write to storage (${error instanceof Error ? error.message : String(error)}). Nothing was persisted.`,
+        error: `Could not write to storage (${failureText(error)}). Nothing was persisted.`,
       };
     }
-  }, [data, source]);
+  }, [source]);
 
   const exportJSON = useCallback((): string => JSON.stringify(data, null, 2), [data]);
 
@@ -578,13 +823,14 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     } else {
       // 1c · the key is genuinely absent. In-memory records may still be the only
       // copy of what the operator is about to replace, so preserve them too.
-      if (!data) {
+      const memory = dataRef.current;
+      if (!memory) {
         return {
           ok: false,
           error: "No records are loaded, so there is nothing to preserve and the import was cancelled.",
         };
       }
-      const saved = source.snapshot(JSON.stringify(data, null, 2), "pre-import-memory");
+      const saved = source.snapshot(JSON.stringify(memory, null, 2), "pre-import-memory");
       if ("error" in saved) {
         return {
           ok: false,
@@ -610,10 +856,11 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     }
 
     // 3 · commit
+    dataRef.current = result.data;
     setData(result.data);
     setSaveState("saved");
     return { ok: true, snapshotKey, counts: result.counts };
-  }, [source, data]);
+  }, [source]);
 
   /**
    * A browser download is only an *initiation*: the page cannot verify that the
@@ -678,42 +925,58 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
         error: `The demonstration dataset could not be written (${error instanceof Error ? error.message : String(error)}). Nothing was changed.`,
       };
     }
+    dataRef.current = seed;
     setData(seed);
     setSaveState("saved");
     setRecovery(null);
     return { ok: true };
   }, [source]);
 
-  const resetToDemo = useCallback(async (): Promise<{ ok: boolean; error?: string }> => {
+  const resetToDemo = useCallback(async (): Promise<DestructiveResult> => {
     if (writesBlockedRef.current) {
       return { ok: false, error: BLOCKED_WRITE_MESSAGE + " Nothing was changed." };
     }
-    const seed = buildSeedData();
-    // Keep operator preferences through the demo reset. Computed outside any
-    // state updater: persistence is a side effect and must not run inside one.
-    const next: AppData = { ...seed, settings: data ? data.settings : seed.settings };
+    if (destructiveRef.current) {
+      return { ok: false, error: BUSY_MESSAGE };
+    }
 
-    // A debounced write of the old records must not land after the reset.
-    if (persistTimer.current) {
-      window.clearTimeout(persistTimer.current);
-      persistTimer.current = null;
-    }
-    opCount.current += 1;   // ignore any save still in flight
-    setSaveState("saving");
+    destructiveRef.current = true;
     try {
-      await source.save(next);
-    } catch (error) {
-      setSaveState("error");
-      return {
-        ok: false,
-        error: `The demonstration dataset could not be written (${error instanceof Error ? error.message : String(error)}). The existing records were left unchanged.`,
-      };
+      // Replacing every record is as destructive as deleting one: the copy has
+      // to exist, and has to be readable back, before anything is touched.
+      const preserved = await preserveBeforeDestructive("pre-reset");
+      if (!preserved.ok) return { ok: false, error: preserved.error };
+
+      const base = dataRef.current;
+      const seed = buildSeedData();
+      // Keep operator preferences through the demo reset. Computed outside any
+      // state updater: persistence is a side effect and must not run inside one.
+      const next: AppData = { ...seed, settings: base ? base.settings : seed.settings };
+
+      opCount.current += 1;   // ignore any save still in flight
+      setSaveState("saving");
+      try {
+        await source.save(next);
+      } catch (error) {
+        setSaveState("error");
+        return {
+          ok: false,
+          snapshotKey: preserved.snapshotKey,
+          error:
+            `The demonstration dataset could not be written (${failureText(error)}). The existing records were left unchanged. ` +
+            `A recovery copy is preserved as “pre-reset”.`,
+        };
+      }
+
+      // Only now is the reset real.
+      dataRef.current = next;
+      setData(next);
+      setSaveState("saved");
+      return { ok: true, snapshotKey: preserved.snapshotKey };
+    } finally {
+      destructiveRef.current = false;
     }
-    // Only now is the reset real.
-    setData(next);
-    setSaveState("saved");
-    return { ok: true };
-  }, [source, data]);
+  }, [source, preserveBeforeDestructive]);
 
   const restoreDefaultSettings = useCallback(() => {
     updateSettings({ ...DEFAULT_SETTINGS });

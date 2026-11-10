@@ -286,6 +286,53 @@ editor. JSON backup/restore and demo reset are store-level operations.
   non-destructive **Retry storage read** and **Reload application**. Only a
   successful re-read (which snapshots the payload) lifts the lock.
 
+### Destructive operations (1.3.12 Phase 1)
+
+Everything that removes records now runs through one path in `hooks/store.tsx`:
+`runDestructive(reason, transform)` → `preserveBeforeDestructive(reason)` →
+write → commit.
+
+- **Protected operations:** demo reset (`pre-reset`), delete meeting
+  (`pre-delete-meeting`, which also cascades agenda, notes, decisions and action
+  items), delete personnel (`pre-delete-person`), delete agenda item
+  (`pre-delete-agenda`), delete decision (`pre-delete-decision`) and delete
+  action item (`pre-delete-task`).
+- **Order is fixed and every step can refuse:** the adapter must expose both
+  `readRaw` and `snapshot`; storage must be readable (a failed read is never
+  read as "nothing stored"); the debounced queue is written down first so the
+  copy includes changes the operator can already see (only when storage and
+  memory actually differ); the copy is written under its reason label; and it is
+  **read back and compared** through `readSnapshot` (or checked against
+  `snapshots()` when read-back is unavailable) before anything is removed.
+- **A failure changes nothing.** If the new document cannot be written, React
+  state keeps the previous records, the operation reports the real storage error,
+  and the recovery copy stays in storage. The result type
+  (`DestructiveResult`) carries `{ ok, error?, snapshotKey? }`, and every call
+  site awaits it, so a success toast only appears after the write landed.
+- **No stale write can undo it.** A pending debounced write is cancelled before
+  preservation, `opCount` is bumped so an in-flight save cannot report over the
+  new document, and record-removing operations are serialised: a second
+  confirmation while one is running is refused (`…still running`), as are
+  ordinary mutations (`mutate`) for the duration of the operation.
+- **The write lock still wins.** While a preserved copy has not been verified
+  (unreadable store, failed snapshot), reset and every delete refuse with the
+  existing write-lock message and touch nothing.
+- **`mutate()` no longer persists from inside a state updater.** The next
+  document is computed from a synchronous mirror (`dataRef`) outside React's
+  updater; a no-op transform writes nothing.
+
+> **Retention limitation:** the history stays at four copies (`MAX_SNAPSHOTS`).
+> The newest copy is always kept — pruning happens after the write and keeps the
+> most recent four keys — but five record-removing operations in a row evict the
+> oldest copy, so an operator who wants to keep an older recovery point must
+> download it. Snapshot keys are timestamped to the millisecond; two operations
+> of the same type in the same millisecond share a key and the later copy wins
+> (the records are identical at that point, so nothing is lost).
+>
+> A destructive operation holds the document for its duration, so a keystroke
+> that arrives in that window is ignored rather than queued. With the
+> localStorage adapter the window is a few milliseconds.
+
 > The configuration screen labels this adapter accurately as provisional:
 > it is *not* the final SQLite database.
 

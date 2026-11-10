@@ -201,11 +201,16 @@ export function MeetingOperations({ navigate }: { navigate: (r: Route) => void }
 
       <ConfirmDialog open={!!confirmDel} onCancel={() => setConfirmDel(null)}
         title="Delete Meeting Record"
-        message={<>Delete <b style={{ color: "var(--text)" }}>“{confirmDel?.title}”</b>? Agenda entries, notes, decisions and action items linked to this record will also be removed. This cannot be undone.</>}
+        message={<>Delete <b style={{ color: "var(--text)" }}>“{confirmDel?.title}”</b>? Agenda entries, notes, decisions and action items linked to this record will also be removed. A recovery copy of the current records is written first; this cannot be undone in the interface.</>}
         confirmLabel="Delete Record"
         onConfirm={() => {
-          if (confirmDel) { deleteMeeting(confirmDel.id); toast.success("Meeting record deleted."); }
+          const target = confirmDel;
           setConfirmDel(null);
+          if (!target) return;
+          void deleteMeeting(target.id).then((res) => {
+            if (res.ok) toast.success("Meeting record deleted. A recovery copy was preserved.");
+            else toast.error(res.error ?? "The meeting record could not be deleted.");
+          });
         }} />
       </div>
     </div>

@@ -138,9 +138,17 @@ export function PersonnelRegistry({ navigate }: { navigate: (r: Route) => void }
       </Modal>
 
       <ConfirmDialog open={!!confirmDel} onCancel={() => setConfirmDel(null)} title="Delete Personnel File"
-        message={<>Delete <b style={{ color: "var(--text)" }}>{confirmDel?.fullName} ({confirmDel?.code})</b>? They will be removed from meeting attendee lists; their action items become unassigned. This cannot be undone.</>}
+        message={<>Delete <b style={{ color: "var(--text)" }}>{confirmDel?.fullName} ({confirmDel?.code})</b>? They will be removed from meeting attendee lists; their action items become unassigned. A recovery copy of the current records is written first; this cannot be undone in the interface.</>}
         confirmLabel="Delete File"
-        onConfirm={() => { if (confirmDel) { deletePerson(confirmDel.id); toast.success("Personnel file deleted."); } setConfirmDel(null); }} />
+        onConfirm={() => {
+          const target = confirmDel;
+          setConfirmDel(null);
+          if (!target) return;
+          void deletePerson(target.id).then((res) => {
+            if (res.ok) toast.success("Personnel file deleted. A recovery copy was preserved.");
+            else toast.error(res.error ?? "The personnel file could not be deleted.");
+          });
+        }} />
       </div>
     </div>
   );

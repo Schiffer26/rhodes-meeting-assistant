@@ -182,8 +182,16 @@ export function TaskOperations({ navigate }: { navigate: (r: Route) => void }) {
 
       <ActionItemFormModal open={!!editId} taskId={editId} onClose={() => setEditId(null)} />
       <ConfirmDialog open={!!confirmDel} onCancel={() => setConfirmDel(null)} title="Delete Action Item"
-        message={<>Delete <b style={{ color: "var(--text)" }}>“{confirmDel?.title}”</b>?</>} confirmLabel="Delete"
-        onConfirm={() => { if (confirmDel) { deleteActionItem(confirmDel.id); toast.success("Action item deleted."); } setConfirmDel(null); }} />
+        message={<>Delete <b style={{ color: "var(--text)" }}>“{confirmDel?.title}”</b>? A recovery copy of the current records is written first.</>} confirmLabel="Delete"
+        onConfirm={() => {
+          const target = confirmDel;
+          setConfirmDel(null);
+          if (!target) return;
+          void deleteActionItem(target.id).then((res) => {
+            if (res.ok) toast.success("Action item deleted. A recovery copy was preserved.");
+            else toast.error(res.error ?? "The action item could not be deleted.");
+          });
+        }} />
     </div>
   );
 }

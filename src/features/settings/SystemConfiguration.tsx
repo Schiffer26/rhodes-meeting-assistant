@@ -271,7 +271,7 @@ export function SystemConfiguration() {
         )} />
 
       <ConfirmDialog open={confirmReset} onCancel={() => setConfirmReset(false)} title="Reset Sample Data"
-        message="Replace ALL current records with the original demonstration dataset? Your interface preferences (theme, motion, formats) are preserved. This cannot be undone."
+        message="Replace ALL current records with the original demonstration dataset? Your interface preferences (theme, motion, formats) are preserved. A recovery copy of the current records is written first; this cannot be undone in the interface."
         confirmLabel="Reset Data"
         onConfirm={async () => {
           setConfirmReset(false);

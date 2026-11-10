@@ -200,8 +200,16 @@ export function AgendaPanel({ meeting }: { meeting: Meeting }) {
       </Modal>
 
       <ConfirmDialog open={!!confirmDel} onCancel={() => setConfirmDel(null)} title="Remove Agenda Item"
-        message={<>Remove <b style={{ color: "var(--text)" }}>“{confirmDel?.title}”</b> from the agenda?</>} confirmLabel="Remove"
-        onConfirm={() => { if (confirmDel) { deleteAgendaItem(confirmDel.id); toast.success("Agenda entry removed."); } setConfirmDel(null); }} />
+        message={<>Remove <b style={{ color: "var(--text)" }}>“{confirmDel?.title}”</b> from the agenda? A recovery copy of the current records is written first.</>} confirmLabel="Remove"
+        onConfirm={() => {
+          const target = confirmDel;
+          setConfirmDel(null);
+          if (!target) return;
+          void deleteAgendaItem(target.id).then((res) => {
+            if (res.ok) toast.success("Agenda entry removed. A recovery copy was preserved.");
+            else toast.error(res.error ?? "The agenda entry could not be removed.");
+          });
+        }} />
     </div>
   );
 }
@@ -395,8 +403,16 @@ export function DecisionsPanel({ meeting }: { meeting: Meeting }) {
       </Modal>
 
       <ConfirmDialog open={!!confirmDel} onCancel={() => setConfirmDel(null)} title="Delete Decision"
-        message={<>Delete decision <b style={{ color: "var(--text)" }}>“{confirmDel?.title}”</b>?</>} confirmLabel="Delete"
-        onConfirm={() => { if (confirmDel) { deleteDecision(confirmDel.id); toast.success("Decision deleted."); } setConfirmDel(null); }} />
+        message={<>Delete decision <b style={{ color: "var(--text)" }}>“{confirmDel?.title}”</b>? A recovery copy of the current records is written first.</>} confirmLabel="Delete"
+        onConfirm={() => {
+          const target = confirmDel;
+          setConfirmDel(null);
+          if (!target) return;
+          void deleteDecision(target.id).then((res) => {
+            if (res.ok) toast.success("Decision deleted. A recovery copy was preserved.");
+            else toast.error(res.error ?? "The decision could not be deleted.");
+          });
+        }} />
     </div>
   );
 }
@@ -439,8 +455,16 @@ export function ActionsPanel({ meeting }: { meeting: Meeting }) {
 
       <ActionItemFormModal open={!!editId} taskId={editId} onClose={() => setEditId(null)} defaultMeetingId={meeting.id} />
       <ConfirmDialog open={!!confirmDel} onCancel={() => setConfirmDel(null)} title="Delete Action Item"
-        message="Delete this action item? This cannot be undone." confirmLabel="Delete"
-        onConfirm={() => { if (confirmDel) { deleteActionItem(confirmDel); toast.success("Action item deleted."); } setConfirmDel(null); }} />
+        message="Delete this action item? A recovery copy of the current records is written first; this cannot be undone in the interface." confirmLabel="Delete"
+        onConfirm={() => {
+          const target = confirmDel;
+          setConfirmDel(null);
+          if (!target) return;
+          void deleteActionItem(target).then((res) => {
+            if (res.ok) toast.success("Action item deleted. A recovery copy was preserved.");
+            else toast.error(res.error ?? "The action item could not be deleted.");
+          });
+        }} />
     </div>
   );
 }
