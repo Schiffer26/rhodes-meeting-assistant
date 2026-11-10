@@ -1,18 +1,20 @@
 // ─────────────────────────────────────────────────────────────
 // RHODES · Recovery surface (1.3.11)
 //
-// When the stored payload cannot be read, the loader preserves it and hands
-// the app an empty, valid record set plus a description of what happened.
+// When the stored payload cannot be read (or had to be repaired), the loader
+// hands the app the surviving record set plus a description of what happened.
 // These two components are the only things the operator sees in that state:
 //
 //   RecoveryScreen — blocking; nothing can be written until a choice is made.
 //   RecoveryBanner — non-blocking; records were repaired/migrated but usable.
 //
 // Both are read-only apart from the explicit actions they expose. Neither one
-// rewrites the stored payload on its own.
+// rewrites the stored payload on its own, and neither can lift the write lock:
+// a browser download is only an invitation to the operator to confirm — the page
+// cannot verify that a file reached the disk.
 // ─────────────────────────────────────────────────────────────
 import React, { useState } from "react";
-import { AlertTriangle, Download, HardDriveDownload, ShieldAlert, X } from "lucide-react";
+import { AlertTriangle, Check, Download, HardDriveDownload, RefreshCw, ShieldAlert, X } from "lucide-react";
 import { Button, ConfirmDialog } from "@/components/ui";
 import { useAppData } from "@/hooks/store";
 import { downloadFile, friendlyBytes } from "@/utils/helpers";
@@ -30,22 +32,50 @@ function preservedSize(info: RecoveryInfo): string {
   return info.preservedRaw ? friendlyBytes(new Blob([info.preservedRaw]).size) : "—";
 }
 
+/**
+ * Trigger the browser download. This is intentionally the whole of the action:
+ * nothing is marked as preserved here, because the page cannot know whether the
+ * file was saved or where it went.
+ */
 function downloadPreserved(info: RecoveryInfo): void {
   if (!info.preservedRaw) return;
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   downloadFile(`rhodes-preserved-${stamp}.json`, info.preservedRaw, "application/json");
 }
 
+/** The one explicit statement that unlocks writing when no snapshot exists. */
+function SaveConfirmation({ compact = false }: { compact?: boolean }) {
+  const { confirmPreservedCopySaved } = useAppData();
+  return (
+    <div style={{ marginTop: compact ? 8 : 14 }}>
+      <Button variant="outline" icon={<Check size={13} />} onClick={confirmPreservedCopySaved}>
+        I have saved the preserved backup
+      </Button>
+      <p
+        className="small"
+        style={{ marginTop: 8, color: "var(--warn)", lineHeight: 1.6, maxWidth: 620 }}
+      >
+        RHODES cannot verify a browser download. Confirm only once the file is on your disk or in
+        another safe location — writing stays locked until you do.
+      </p>
+    </div>
+  );
+}
+
 export function RecoveryScreen() {
-  const { recovery, dismissRecovery, startWithDemoData, writesBlocked, markPreservedCopyDownloaded } = useAppData();
+  const {
+    recovery, dismissRecovery, startWithDemoData, writesBlocked, preservedCopyUnreadable,
+    preservedCopyDownloadStarted, notePreservedCopyDownload, retryRecovery,
+  } = useAppData();
   const [confirmDemo, setConfirmDemo] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [retrying, setRetrying] = useState(false);
 
   if (!recovery) return null;
 
-  // Writing is only allowed once a second copy of the original exists: either
-  // the snapshot the loader wrote, or a file the operator has just downloaded.
+  // Writing is only allowed once a second copy of the original exists: a
+  // snapshot the loader verifiably wrote, or a file the operator has confirmed.
   // The lock lives in the store, so this screen cannot be bypassed.
   const locked = writesBlocked;
 
@@ -56,6 +86,14 @@ export function RecoveryScreen() {
     setBusy(false);
     setConfirmDemo(false);
     if (!res.ok) setError(res.error ?? "The demonstration dataset could not be written.");
+  };
+
+  const retry = async () => {
+    setRetrying(true);
+    setError(null);
+    const res = await retryRecovery();
+    setRetrying(false);
+    if (!res.ok) setError(`Storage still cannot be read (${res.error}). Nothing was changed.`);
   };
 
   return (
@@ -69,9 +107,11 @@ export function RecoveryScreen() {
         </h1>
         <p className="small dim-2" style={{ marginTop: 10, lineHeight: 1.65, maxWidth: 640 }}>
           {recovery.message}{" "}
-          {recovery.snapshotError
-            ? "Nothing has been overwritten: the stored payload is still in place, unchanged. This screen writes nothing until you choose an action."
-            : "Nothing has been overwritten: the stored payload is still in place and a preserved copy was written beside it. This screen writes nothing until you choose an action."}
+          {preservedCopyUnreadable
+            ? "The stored payload — if any — is still in place, and this screen writes nothing until the records can be read again."
+            : recovery.snapshotError
+              ? "Nothing has been overwritten: the stored payload is still in place, unchanged. This screen writes nothing until you choose an action."
+              : "Nothing has been overwritten: the stored payload is still in place and a preserved copy was written beside it. This screen writes nothing until you choose an action."}
         </p>
 
         <div className="panel" style={{ marginTop: 20, padding: 18, borderLeft: "3px solid var(--warn)" }}>
@@ -90,10 +130,26 @@ export function RecoveryScreen() {
             <dd>{preservedSize(recovery)}</dd>
             <dt>Records readable</dt>
             <dd>
-              {recovery.counts.kept} kept
-              {recovery.counts.dropped > 0 ? ` · ${recovery.counts.dropped} set aside` : ""}
+              {preservedCopyUnreadable
+                ? "unknown — storage could not be read"
+                : `${recovery.counts.kept} kept${recovery.counts.dropped > 0 ? ` · ${recovery.counts.dropped} set aside` : ""}`}
             </dd>
           </dl>
+
+          {preservedCopyUnreadable && (
+            <div
+              className="small"
+              style={{
+                marginTop: 12, padding: "10px 12px", border: "1px solid var(--crit)",
+                color: "var(--crit)", background: "var(--surface-2)", lineHeight: 1.55,
+              }}
+            >
+              <b>RHODES could not access the stored records.</b> Because nothing could be read, RHODES
+              cannot prove a second copy exists and cannot download the payload for you either. Writing
+              stays blocked so an existing record set cannot be overwritten. Retry the read below; if it
+              keeps failing, reload the application.
+            </div>
+          )}
 
           {recovery.snapshotError && (
             <div
@@ -127,11 +183,21 @@ export function RecoveryScreen() {
         <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginTop: 20 }}>
           <Button
             icon={<Download size={13} />}
-            onClick={() => { downloadPreserved(recovery); markPreservedCopyDownloaded(); }}
-            disabled={!recovery.preservedRaw}
+            onClick={() => { downloadPreserved(recovery); notePreservedCopyDownload(); }}
+            disabled={!recovery.preservedRaw || busy}
           >
             Download preserved copy
           </Button>
+          {preservedCopyUnreadable && (
+            <Button icon={<RefreshCw size={13} />} onClick={retry} disabled={busy || retrying}>
+              {retrying ? "Retrying…" : "Retry storage read"}
+            </Button>
+          )}
+          {preservedCopyUnreadable && (
+            <Button variant="ghost" onClick={() => window.location.reload()} disabled={busy || retrying}>
+              Reload application
+            </Button>
+          )}
           <Button icon={<HardDriveDownload size={13} />} onClick={() => setConfirmDemo(true)} disabled={busy || locked}>
             Start with demo data
           </Button>
@@ -140,16 +206,21 @@ export function RecoveryScreen() {
           </Button>
         </div>
 
+        {locked && preservedCopyDownloadStarted && !preservedCopyUnreadable && <SaveConfirmation />}
+
         {locked && (
           <p className="small" style={{ marginTop: 14, color: "var(--warn)", lineHeight: 1.6 }}>
-            A second copy does not exist yet, so writing is blocked — anything written now would destroy
-            the only copy of these records. Download the preserved copy first to unlock the options above.
+            {preservedCopyUnreadable
+              ? "Writing is blocked: RHODES could not access the stored records and cannot prove a second copy exists. Retry the read or reload before making any change."
+              : "A verified second copy does not exist yet, so writing is blocked — anything written now would destroy the only copy of these records. Download the preserved copy, confirm it is saved, then choose an action above."}
           </p>
         )}
 
         <p className="mono" style={{ marginTop: 18, fontSize: 10, letterSpacing: "0.08em", color: "var(--text-3)", lineHeight: 1.7 }}>
-          CONTINUING WITH AN EMPTY WORKSPACE LEAVES THE PRESERVED COPY IN PLACE AND DOES NOT DELETE IT.
-          NEW EDITS ARE WRITTEN TO THE LIVE KEY ONLY.
+          {preservedCopyUnreadable
+            ? "NOTHING HAS BEEN WRITTEN. THE STORED PAYLOAD — IF PRESENT — REMAINS UNDER THE KEY ABOVE."
+            : <>CONTINUING WITH AN EMPTY WORKSPACE LEAVES THE PRESERVED COPY IN PLACE AND DOES NOT DELETE IT.
+              NEW EDITS ARE WRITTEN TO THE LIVE KEY ONLY.</>}
         </p>
       </div>
 
@@ -172,7 +243,10 @@ export function RecoveryScreen() {
 }
 
 export function RecoveryBanner() {
-  const { recovery, dismissRecovery, writesBlocked, markPreservedCopyDownloaded } = useAppData();
+  const {
+    recovery, dismissRecovery, writesBlocked, preservedCopyDownloadStarted,
+    notePreservedCopyDownload, confirmPreservedCopySaved,
+  } = useAppData();
   if (!recovery) return null;
   // The blocking states are handled by <RecoveryScreen/>.
   if (recovery.kind === "corrupt" || recovery.kind === "invalid") return null;
@@ -197,18 +271,31 @@ export function RecoveryBanner() {
         <div className="small" style={{ lineHeight: 1.5, marginTop: 3 }}>{recovery.message}</div>
         {writesBlocked && (
           <div className="small" style={{ lineHeight: 1.5, marginTop: 4, color: "var(--warn)" }}>
-            Editing is disabled because no second copy of the stored records exists yet. Download the
-            preserved copy to unlock writing — the stored records stay untouched until then.
+            Editing is disabled because no verified second copy of the stored records exists yet.
+            Download the preserved copy, confirm it is saved, and writing unlocks — the stored records
+            stay untouched until then.
           </div>
         )}
-        <div style={{ display: "flex", gap: 10, marginTop: 6, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 10, marginTop: 6, flexWrap: "wrap", alignItems: "center" }}>
           {recovery.preservedRaw && (
             <button
               className="mono"
-              onClick={() => { downloadPreserved(recovery); markPreservedCopyDownloaded(); }}
+              onClick={() => { downloadPreserved(recovery); notePreservedCopyDownload(); }}
               style={{ fontSize: 10, letterSpacing: "0.1em", color: "var(--accent)", background: "none", border: 0, cursor: "pointer", padding: 0 }}
             >
               DOWNLOAD PRESERVED COPY
+            </button>
+          )}
+          {writesBlocked && preservedCopyDownloadStarted && recovery.preservedRaw && (
+            <span className="mono" aria-hidden="true" style={{ fontSize: 10, color: "var(--text-3)" }}>·</span>
+          )}
+          {writesBlocked && preservedCopyDownloadStarted && recovery.preservedRaw && (
+            <button
+              className="mono"
+              onClick={confirmPreservedCopySaved}
+              style={{ fontSize: 10, letterSpacing: "0.1em", color: "var(--warn)", background: "none", border: 0, cursor: "pointer", padding: 0 }}
+            >
+              I HAVE SAVED THE BACKUP
             </button>
           )}
           {recovery.snapshotKey && (

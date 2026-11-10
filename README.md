@@ -260,7 +260,18 @@ editor. JSON backup/restore and demo reset are store-level operations.
   store refuses every write path (`mutate`, `persist`, `flush`, import, demo
   reset, "continue" and dismiss) until the operator downloads the preserved
   copy, or a later snapshot succeeds. The notice shows *WRITES LOCKED* and
-  cannot be dismissed while the lock is active.
+  cannot be dismissed while the lock is active. The lock is not lifted by the
+  download itself — a browser download cannot be verified — only by the
+  operator's explicit "I have saved the preserved backup" confirmation, which is
+  offered after the download is started. The confirmation is session-scoped: a
+  reload re-evaluates preservation from storage.
+- **An unreadable store is never a licence to write.** If the adapter cannot
+  read storage at all (blocked profile, IPC failure, rejecting `load()`), the
+  payload may still exist, so `preservedRaw` being empty proves nothing. The app
+  opens on the recovery screen with every write path refused, no demo reset, no
+  dismissal and no download (there is nothing readable to hand over) — plus a
+  non-destructive **Retry storage read** and **Reload application**. Only a
+  successful re-read (which snapshots the payload) lifts the lock.
 
 > The configuration screen labels this adapter accurately as provisional:
 > it is *not* the final SQLite database.

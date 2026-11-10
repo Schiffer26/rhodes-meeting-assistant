@@ -77,15 +77,27 @@ export interface Store {
   recovery: RecoveryInfo | null;
   /** True while the recovered payload blocks normal use (corrupt / invalid). */
   recoveryBlocking: boolean;
-  /** A payload had to be preserved but no second copy exists yet. */
-  preservedCopyMissing: boolean;
+  /**
+   * A payload has to be preserved and RHODES cannot verify a second copy yet.
+   * This includes the case where the stored records could not be read at all —
+   * a missing `preservedRaw` is never treated as proof that no records exist.
+   */
+  preservationPending: boolean;
+  /** The original could not even be read, so it cannot be downloaded either. */
+  preservedCopyUnreadable: boolean;
+  /** A download was initiated. Does NOT mean the file was saved. */
+  preservedCopyDownloadStarted: boolean;
   /**
    * True while the original payload is the only copy: every mutation and every
    * write is refused so the stored bytes cannot be overwritten.
    */
   writesBlocked: boolean;
-  /** Operator has downloaded the preserved payload — a second copy exists. */
-  markPreservedCopyDownloaded: () => void;
+  /** Record that a download was started. Deliberately does not unlock writing. */
+  notePreservedCopyDownload: () => void;
+  /** The operator confirms the file is saved. The only external unlock. */
+  confirmPreservedCopySaved: () => void;
+  /** Re-attempt the storage read after a read failure. Non-destructive. */
+  retryRecovery: () => Promise<{ ok: boolean; error?: string }>;
   /** Acknowledge the notice and continue with the records currently in memory. */
   dismissRecovery: () => void;
   /** Explicit, confirmed choice to start from the demonstration dataset. */
@@ -108,6 +120,15 @@ export interface ImportResult {
 }
 
 const Ctx = createContext<Store | null>(null);
+
+/**
+ * Write-lock wording. Deliberately does not promise a download is enough: the
+ * operator has to confirm the file is actually saved.
+ */
+const BLOCKED_WRITE_MESSAGE =
+  "Writes are blocked because no verified second copy of the stored records exists yet.";
+const NO_COPY_MESSAGE =
+  "A verified second copy of the stored records must exist first — save the preserved backup and confirm it to unlock writing.";
 
 /**
  * Empty but schema-valid record exposed while `ready === false`.
@@ -148,19 +169,59 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
   }
   const [data, setData] = useState<AppData | null>(bootRef.current.data);
   const [recovery, setRecovery] = useState<RecoveryInfo | null>(bootRef.current.recovery);
-  // A preserved payload with no snapshot key means the loader could not copy it:
-  // the live key holds the only copy, so nothing may be written until the
-  // operator has downloaded it (or a snapshot appears some other way).
+  // ── write protection (1.3.11 Phase 1b) ─────────────────────
+  // `snapshotKey` is the only second copy RHODES can verify by itself. Any other
+  // recovery state means an original payload exists — or may exist — that has
+  // not been duplicated: a corrupt/invalid payload whose snapshot failed, or a
+  // payload the adapter could not read at all. A missing `preservedRaw` is not
+  // evidence that the records are empty, so it never lifts the lock.
+  // Migration-only notices are informational: nothing was set aside or repaired.
   const [preservedCopyConfirmed, setPreservedCopyConfirmed] = useState(false);
-  const preservedCopyMissing = !!recovery && !!recovery.preservedRaw && !recovery.snapshotKey;
-  const writesBlocked = preservedCopyMissing && !preservedCopyConfirmed;
+  const [preservedCopyDownloadStarted, setPreservedCopyDownloadStarted] = useState(false);
+  const preservationPending = !!recovery && recovery.kind !== "migrated" && !recovery.snapshotKey;
+  const preservedCopyUnreadable =
+    !!recovery && preservationPending && (recovery.unreadable === true || !recovery.preservedRaw);
+  const writesBlocked = preservationPending && !preservedCopyConfirmed;
   const writesBlockedRef = useRef(writesBlocked);
   writesBlockedRef.current = writesBlocked;
+  const preservationPendingRef = useRef(preservationPending);
+  preservationPendingRef.current = preservationPending;
+  const unreadableRef = useRef(preservedCopyUnreadable);
+  unreadableRef.current = preservedCopyUnreadable;
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const ready = data !== null;
   const hydratedOnFirstRender = useRef(bootRef.current.data !== null);
   const persistTimer = useRef<number | null>(null);
   const opCount = useRef(0);
+
+  /**
+   * Adopt a loader outcome. Any earlier "I saved the backup" confirmation is
+   * discarded: a new outcome describes a new preservation problem, and the
+   * operator must confirm again (or a snapshot must exist).
+   */
+  const applyOutcome = useCallback((outcome: LoadOutcome | null) => {
+    if (!outcome) return;
+    setPreservedCopyConfirmed(false);
+    setPreservedCopyDownloadStarted(false);
+    setRecovery(outcome.recovery ?? null);
+    setData(outcome.data);
+  }, []);
+
+  /** The adapter could not be read: records may exist and we cannot prove otherwise. */
+  const readFailure = useCallback((error: unknown): LoadOutcome => ({
+    data: emptyAppData(source.label),
+    recovery: {
+      kind: "invalid",
+      message:
+        "RHODES could not access the stored records, so it cannot prove a second copy exists. " +
+        "Nothing has been written over them and writing stays blocked until they can be read.",
+      details: [error instanceof Error ? error.message : String(error)],
+      snapshotKey: null,
+      preservedRaw: null,
+      unreadable: true,
+      counts: { kept: 0, dropped: 0 },
+    },
+  }), [source]);
 
   useEffect(() => {
     if (hydratedOnFirstRender.current) return;   // already hydrated above
@@ -168,27 +229,16 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     source.load()
       .then((loaded) => {
         if (!alive) return;
-        const outcome: LoadOutcome | null = normaliseOutcome(loaded ?? null);
-        if (!outcome) return;
-        setRecovery(outcome.recovery ?? null);
-        setData(outcome.data);
+        applyOutcome(normaliseOutcome(loaded ?? null));
       })
       .catch((error) => {
         // A failing adapter must not leave the gate spinning forever, and must
         // not be "fixed" by inventing records.
         if (!alive) return;
-        setRecovery({
-          kind: "invalid",
-          message: "The record store could not be opened, so no records were changed.",
-          details: [error instanceof Error ? error.message : String(error)],
-          snapshotKey: null,
-          preservedRaw: null,
-          counts: { kept: 0, dropped: 0 },
-        });
-        setData(emptyAppData(source.label));
+        applyOutcome(readFailure(error));
       });
     return () => { alive = false; };
-  }, [source]);
+  }, [source, applyOutcome, readFailure]);
 
   const persist = useCallback((next: AppData) => {
     // Defence in depth: `mutate` already refuses while writes are blocked, and a
@@ -410,7 +460,7 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     if (writesBlockedRef.current) {
       return {
         ok: false,
-        error: "Writes are blocked until the preserved copy of the stored records has been downloaded.",
+        error: BLOCKED_WRITE_MESSAGE,
       };
     }
     if (persistTimer.current) window.clearTimeout(persistTimer.current);
@@ -485,7 +535,7 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     if (writesBlockedRef.current) {
       return {
         ok: false,
-        error: "Writes are blocked until the preserved copy of the stored records has been downloaded. No records were changed.",
+        error: BLOCKED_WRITE_MESSAGE + " No records were changed.",
       };
     }
 
@@ -530,7 +580,42 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     return { ok: true, snapshotKey, counts: result.counts };
   }, [source]);
 
-  const markPreservedCopyDownloaded = useCallback(() => setPreservedCopyConfirmed(true), []);
+  /**
+   * A browser download is only an *initiation*: the page cannot verify that the
+   * file reached the operator's disk. Record it so the explicit confirmation
+   * control can appear — but do not unlock anything here.
+   */
+  const notePreservedCopyDownload = useCallback(() => {
+    if (!preservationPendingRef.current) return;
+    setPreservedCopyDownloadStarted(true);
+  }, []);
+
+  /**
+   * The operator states that the preserved file is saved. This is the only
+   * external unlock, and it is refused when the payload was never readable
+   * (there is no file to confirm — only a successful re-read can help).
+   */
+  const confirmPreservedCopySaved = useCallback(() => {
+    if (!preservationPendingRef.current) return;
+    if (unreadableRef.current) return;
+    setPreservedCopyConfirmed(true);
+  }, []);
+
+  /** Re-attempt the read. Never writes, never clears the lock on its own. */
+  const retryRecovery = useCallback(async (): Promise<{ ok: boolean; error?: string }> => {
+    try {
+      const sync = source.loadSync?.();
+      if (sync !== undefined && sync !== null) {
+        applyOutcome(normaliseOutcome(sync));
+        return { ok: true };
+      }
+      applyOutcome(normaliseOutcome(await source.load()));
+      return { ok: true };
+    } catch (error) {
+      applyOutcome(readFailure(error));
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }, [source, applyOutcome, readFailure]);
 
   /**
    * A notice may be dismissed only when it is purely informational. While the
@@ -546,7 +631,7 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     if (writesBlockedRef.current) {
       return {
         ok: false,
-        error: "A second copy of the stored records must exist first — download the preserved copy to unlock writing.",
+        error: NO_COPY_MESSAGE,
       };
     }
     const seed = buildSeedData();
@@ -568,7 +653,7 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     if (writesBlockedRef.current) {
       return {
         ok: false,
-        error: "Writes are blocked until the preserved copy of the stored records has been downloaded. Nothing was changed.",
+        error: BLOCKED_WRITE_MESSAGE + " Nothing was changed.",
       };
     }
     const seed = buildSeedData();
@@ -588,7 +673,8 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
   const value = useMemo<Store>(() => ({
     ready: ready, data: data ?? LOADING_DATA, saveState,
     recovery, recoveryBlocking: recovery !== null && (recovery.kind === "corrupt" || recovery.kind === "invalid"),
-    preservedCopyMissing, writesBlocked, markPreservedCopyDownloaded,
+    preservationPending, preservedCopyUnreadable, preservedCopyDownloadStarted, writesBlocked,
+    notePreservedCopyDownload, confirmPreservedCopySaved, retryRecovery,
     createMeeting, updateMeeting, deleteMeeting, setMeetingStatus,
     addAgendaItem, updateAgendaItem, deleteAgendaItem, moveAgendaItem, setAgendaStatus,
     createPerson, updatePerson, deletePerson,
@@ -600,7 +686,8 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     dismissRecovery, startWithDemoData,
   }), [
     ready, data, saveState, recovery, previewImport, dismissRecovery, startWithDemoData,
-    preservedCopyMissing, writesBlocked, markPreservedCopyDownloaded, createMeeting, updateMeeting, deleteMeeting, setMeetingStatus,
+    preservationPending, preservedCopyUnreadable, preservedCopyDownloadStarted, writesBlocked,
+    notePreservedCopyDownload, confirmPreservedCopySaved, retryRecovery, createMeeting, updateMeeting, deleteMeeting, setMeetingStatus,
     addAgendaItem, updateAgendaItem, deleteAgendaItem, moveAgendaItem, setAgendaStatus,
     createPerson, updatePerson, deletePerson, saveNote,
     createDecision, updateDecision, deleteDecision,

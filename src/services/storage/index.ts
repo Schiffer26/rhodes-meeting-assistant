@@ -39,6 +39,12 @@ export interface RecoveryInfo {
   snapshotError?: string;
   /** Original text, kept in memory for the download action. */
   preservedRaw: string | null;
+  /**
+   * The adapter could not read storage at all, so the payload is unknown: it may
+   * or may not exist, cannot be downloaded, and cannot be snapshotted. The store
+   * treats this as "preservation unverified" and blocks every write.
+   */
+  unreadable?: boolean;
   counts: { kept: number; dropped: number };
 }
 
@@ -172,10 +178,13 @@ export class LocalStorageAdapter implements StorageAdapter {
         data: emptyAppData(),
         recovery: {
           kind: "invalid",
-          message: "Local storage could not be read, so the records were left exactly as they are.",
+          message:
+            "RHODES could not access the stored records, so it cannot prove a second copy exists. " +
+            "They have been left exactly as they are and writing stays blocked until they can be read.",
           details: [error instanceof Error ? error.message : String(error)],
           snapshotKey: null,
           preservedRaw: null,
+          unreadable: true,
           counts: { kept: 0, dropped: 0 },
         },
       };
@@ -214,7 +223,7 @@ export class LocalStorageAdapter implements StorageAdapter {
     // values repaired). The exact original bytes are preserved first; nothing is
     // written over them. If the copy cannot be written the store keeps the
     // console read-only until the operator has a second copy (see
-    // `preservedCopyMissing` on RecoveryInfo), so the original cannot be lost.
+    // `preservationPending` in the store), so the original cannot be lost.
     if (result.dropped.length || result.structural.length) {
       const parts: string[] = [];
       if (result.dropped.length) {
