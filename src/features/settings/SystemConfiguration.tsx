@@ -273,7 +273,12 @@ export function SystemConfiguration() {
       <ConfirmDialog open={confirmReset} onCancel={() => setConfirmReset(false)} title="Reset Sample Data"
         message="Replace ALL current records with the original demonstration dataset? Your interface preferences (theme, motion, formats) are preserved. This cannot be undone."
         confirmLabel="Reset Data"
-        onConfirm={() => { resetToDemo(); setConfirmReset(false); toast.success("Sample dataset restored."); refreshUsage(); }} />
+        onConfirm={() => {
+          setConfirmReset(false);
+          const res = resetToDemo();
+          if (res.ok) { toast.success("Sample dataset restored."); refreshUsage(); }
+          else toast.error(res.error ?? "The sample dataset could not be restored.");
+        }} />
       <ConfirmDialog open={confirmDefaults} onCancel={() => setConfirmDefaults(false)} title="Restore Default Settings"
         message="Reset theme, motion, and interface preferences to factory defaults? Records are not affected."
         confirmLabel="Restore Defaults"

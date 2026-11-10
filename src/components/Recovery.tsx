@@ -37,17 +37,17 @@ function downloadPreserved(info: RecoveryInfo): void {
 }
 
 export function RecoveryScreen() {
-  const { recovery, dismissRecovery, startWithDemoData } = useAppData();
+  const { recovery, dismissRecovery, startWithDemoData, writesBlocked, markPreservedCopyDownloaded } = useAppData();
   const [confirmDemo, setConfirmDemo] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [downloaded, setDownloaded] = useState(false);
 
   if (!recovery) return null;
 
   // Writing is only allowed once a second copy of the original exists: either
   // the snapshot the loader wrote, or a file the operator has just downloaded.
-  const preserved = !!recovery.snapshotKey || downloaded;
+  // The lock lives in the store, so this screen cannot be bypassed.
+  const locked = writesBlocked;
 
   const start = async () => {
     setBusy(true);
@@ -127,20 +127,20 @@ export function RecoveryScreen() {
         <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginTop: 20 }}>
           <Button
             icon={<Download size={13} />}
-            onClick={() => { downloadPreserved(recovery); setDownloaded(true); }}
+            onClick={() => { downloadPreserved(recovery); markPreservedCopyDownloaded(); }}
             disabled={!recovery.preservedRaw}
           >
             Download preserved copy
           </Button>
-          <Button icon={<HardDriveDownload size={13} />} onClick={() => setConfirmDemo(true)} disabled={busy || !preserved}>
+          <Button icon={<HardDriveDownload size={13} />} onClick={() => setConfirmDemo(true)} disabled={busy || locked}>
             Start with demo data
           </Button>
-          <Button variant="primary" onClick={dismissRecovery} disabled={busy || !preserved}>
+          <Button variant={locked ? "secondary" : "primary"} onClick={dismissRecovery} disabled={busy || locked}>
             Continue with empty workspace
           </Button>
         </div>
 
-        {!preserved && (
+        {locked && (
           <p className="small" style={{ marginTop: 14, color: "var(--warn)", lineHeight: 1.6 }}>
             A second copy does not exist yet, so writing is blocked — anything written now would destroy
             the only copy of these records. Download the preserved copy first to unlock the options above.
@@ -172,7 +172,7 @@ export function RecoveryScreen() {
 }
 
 export function RecoveryBanner() {
-  const { recovery, dismissRecovery } = useAppData();
+  const { recovery, dismissRecovery, writesBlocked, markPreservedCopyDownloaded } = useAppData();
   if (!recovery) return null;
   // The blocking states are handled by <RecoveryScreen/>.
   if (recovery.kind === "corrupt" || recovery.kind === "invalid") return null;
@@ -184,21 +184,28 @@ export function RecoveryBanner() {
         position: "fixed", left: 16, bottom: 16, zIndex: 150,
         maxWidth: 460, display: "flex", alignItems: "flex-start", gap: 10,
         padding: "10px 12px", background: "var(--surface)",
-        border: "1px solid var(--border)", borderLeft: "3px solid var(--warn)",
+        border: "1px solid var(--border)",
+        borderLeft: `3px solid ${writesBlocked ? "var(--crit)" : "var(--warn)"}`,
         boxShadow: "var(--shadow-sm)",
       }}
     >
       <AlertTriangle size={14} style={{ color: "var(--warn)", flexShrink: 0, marginTop: 2 }} />
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div className="mono" style={{ fontSize: 10, letterSpacing: "0.12em", color: "var(--text-2)" }}>
-          {KIND_LABEL[recovery.kind]}
+        <div className="mono" style={{ fontSize: 10, letterSpacing: "0.12em", color: writesBlocked ? "var(--crit)" : "var(--text-2)" }}>
+          {KIND_LABEL[recovery.kind]}{writesBlocked ? " · WRITES LOCKED" : ""}
         </div>
         <div className="small" style={{ lineHeight: 1.5, marginTop: 3 }}>{recovery.message}</div>
+        {writesBlocked && (
+          <div className="small" style={{ lineHeight: 1.5, marginTop: 4, color: "var(--warn)" }}>
+            Editing is disabled because no second copy of the stored records exists yet. Download the
+            preserved copy to unlock writing — the stored records stay untouched until then.
+          </div>
+        )}
         <div style={{ display: "flex", gap: 10, marginTop: 6, flexWrap: "wrap" }}>
           {recovery.preservedRaw && (
             <button
               className="mono"
-              onClick={() => downloadPreserved(recovery)}
+              onClick={() => { downloadPreserved(recovery); markPreservedCopyDownloaded(); }}
               style={{ fontSize: 10, letterSpacing: "0.1em", color: "var(--accent)", background: "none", border: 0, cursor: "pointer", padding: 0 }}
             >
               DOWNLOAD PRESERVED COPY
@@ -215,9 +222,11 @@ export function RecoveryBanner() {
           )}
         </div>
       </div>
-      <button className="editor-tool" style={{ width: 22, height: 22 }} onClick={dismissRecovery} aria-label="Dismiss recovery notice">
-        <X size={12} />
-      </button>
+      {!writesBlocked && (
+        <button className="editor-tool" style={{ width: 22, height: 22 }} onClick={dismissRecovery} aria-label="Dismiss recovery notice">
+          <X size={12} />
+        </button>
+      )}
     </div>
   );
 }

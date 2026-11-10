@@ -6,20 +6,26 @@
 // read) and by the JSON importer (which must never replace records
 // with anything that is not fully understood).
 //
-// Two levels of trouble are distinguished:
+// Three levels of trouble are distinguished:
 //
-//   fatal   — the payload as a whole cannot be trusted (not an object,
-//             a collection is not an array, another schema generation).
-//             The caller keeps the original bytes and works on empty
-//             records; nothing is ever written over the source.
-//   dropped — a single record is unusable. On load the record is set
-//             aside in a preserved copy and reported; on import the
-//             whole file is refused, because an import must not
-//             silently discard anything the operator believed they had.
+//   fatal      — the payload as a whole cannot be trusted (not an object,
+//                a collection that is not an array, another schema
+//                generation). Nothing is ever written over the source.
+//   structural — the payload is renderable but incomplete or wrong:
+//                a required collection is missing, required metadata is
+//                absent/invalid, or a field holds an invalid value (bad
+//                enum, wrong type). Loading may repair these *after* the
+//                original has been preserved; an import must refuse the
+//                file, because a backup that is missing a collection
+//                would silently wipe that collection.
+//   dropped    — a single record cannot be represented at all.
 //
-// Missing optional text is repaired (coerced to ""), never treated as a
-// reason to drop a record: the goal is to keep records, not to be strict
-// about cosmetics.
+// Harmless cosmetic gaps (an absent optional string, an absent numeric
+// default, an absent meta.firstRunAt) are "repaired" and never block an
+// import: they cannot lose records.
+//
+// Import gate = no fatal, no structural, no dropped.
+// Load gate   = no fatal (everything else is preserved + reported).
 // ─────────────────────────────────────────────────────────────
 import type {
   ActionItem, AgendaItem, AgendaStatus, AppData, AppSettings, AttendanceStatus,
@@ -37,12 +43,18 @@ import { DEFAULT_SETTINGS } from "@/types";
  */
 export const SCHEMA_VERSION = 2;
 
+/** The six collections a complete RHODES record set must contain. */
+export const REQUIRED_COLLECTIONS = [
+  "meetings", "agendaItems", "personnel", "notes", "decisions", "actionItems",
+] as const;
+
 export interface ValidationResult {
   /** No fatal problem: `data` is present and safe to render. */
   usable: boolean;
-  /** Usable *and* nothing had to be dropped or repaired — safe to import. */
+  /** Nothing dropped, nothing structural: safe to import over live records. */
   clean: boolean;
   fatal: string[];
+  structural: string[];
   dropped: string[];
   repaired: string[];
   migratedFrom: number | null;
@@ -61,65 +73,122 @@ const isRecord = (v: unknown): v is Record<string, unknown> =>
 const isStringArray = (v: unknown): v is string[] =>
   Array.isArray(v) && v.every((x) => typeof x === "string");
 
-const asText = (v: unknown): string => (typeof v === "string" ? v : "");
-const asIdOrNull = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
-const asFinite = (v: unknown, fallback: number): number =>
-  typeof v === "number" && Number.isFinite(v) ? v : fallback;
-
-function asEnum<T extends string>(v: unknown, allowed: readonly T[], fallback: T): T {
-  return typeof v === "string" && (allowed as readonly string[]).includes(v) ? (v as T) : fallback;
-}
-
 const MEETING_STATUS: readonly MeetingStatus[] = ["upcoming", "in-progress", "completed", "cancelled"];
 const AGENDA_STATUS: readonly AgendaStatus[] = ["not-started", "in-discussion", "discussed", "skipped", "postponed"];
 const ATTENDANCE: readonly AttendanceStatus[] = ["invited", "present", "absent", "excused"];
 const TASK_STATUS: readonly TaskStatus[] = ["pending", "in-progress", "completed"];
 const PRIORITY: readonly Priority[] = ["low", "medium", "high", "critical"];
 const DECISION_STATUS: readonly DecisionStatus[] = ["proposed", "approved", "rejected", "deferred"];
+const THEME: readonly AppSettings["theme"][] = ["terminal", "archive", "system"];
+const MOTION: readonly AppSettings["motionPreference"][] = ["immersive", "reduced", "off"];
+const FONT: readonly AppSettings["fontSize"][] = ["small", "medium", "large"];
+const DENSITY: readonly AppSettings["density"][] = ["comfortable", "compact"];
+const DATE_FORMAT: readonly AppSettings["dateFormat"][] = ["iso", "dmy", "mdy"];
+const TIME_FORMAT: readonly AppSettings["timeFormat"][] = ["24h", "12h"];
 
-// ── Records ───────────────────────────────────────────────────
-// Each check returns the record with cosmetic gaps filled, or a reason
-// why the record cannot be represented at all (no id, array-shaped where
-// an object belongs, …).
+/** Collector handed to every field check. */
+interface Report {
+  structural: string[];
+}
 
-function checkMeeting(raw: unknown): Check<Meeting> {
+const flag = (report: Report, message: string): void => {
+  if (!report.structural.includes(message)) report.structural.push(message);
+};
+
+// ── field readers ─────────────────────────────────────────────
+// Absent (`undefined`) means "not supplied" and resolves to the default
+// without complaint. Anything else that is the wrong shape or an invalid
+// value is *structural*: an import carrying it is refused.
+
+function textOf(raw: Record<string, unknown>, key: string, path: string, report: Report): string {
+  const v = raw[key];
+  if (v === undefined) return "";
+  if (typeof v === "string") return v;
+  flag(report, `${path}.${key} is not text (${JSON.stringify(v)})`);
+  return "";
+}
+
+function idOf(raw: Record<string, unknown>, key: string, path: string, report: Report): string | null {
+  const v = raw[key];
+  if (v === undefined || v === null) return null;
+  if (typeof v === "string") return v;
+  flag(report, `${path}.${key} is not an id (${JSON.stringify(v)})`);
+  return null;
+}
+
+function numOf(raw: Record<string, unknown>, key: string, fallback: number, path: string, report: Report): number {
+  const v = raw[key];
+  if (v === undefined) return fallback;
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  flag(report, `${path}.${key} is not a number (${JSON.stringify(v)})`);
+  return fallback;
+}
+
+function enumOf<T extends string>(
+  raw: Record<string, unknown>, key: string, allowed: readonly T[], fallback: T, path: string, report: Report,
+): T {
+  const v = raw[key];
+  if (v === undefined) return fallback;
+  if (typeof v === "string" && (allowed as readonly string[]).includes(v)) return v as T;
+  flag(report, `${path}.${key} = ${JSON.stringify(v)} is not a valid value (expected ${allowed.join(" | ")})`);
+  return fallback;
+}
+
+// ── records ───────────────────────────────────────────────────
+
+function checkMeeting(raw: unknown, path: string, report: Report): Check<Meeting> {
   if (!isRecord(raw)) return no("not an object");
   const id = typeof raw.id === "string" ? raw.id : "";
   if (!id) return no("missing id");
-  if (typeof raw.attendeeIds !== "undefined" && !isStringArray(raw.attendeeIds)) return no("attendeeIds is not a list of ids");
-  if (typeof raw.attendance !== "undefined" && !isRecord(raw.attendance)) return no("attendance is not a map");
+  if (raw.attendeeIds !== undefined && !Array.isArray(raw.attendeeIds)) return no("attendeeIds is not a list");
+  if (raw.attendance !== undefined && !isRecord(raw.attendance)) return no("attendance is not a map");
+
   const attendance: Record<string, AttendanceStatus> = {};
   if (isRecord(raw.attendance)) {
     for (const [personId, value] of Object.entries(raw.attendance)) {
-      attendance[personId] = asEnum(value, ATTENDANCE, "invited");
+      attendance[personId] = enumOf(raw.attendance, personId, ATTENDANCE, "invited", `${path}.attendance`, report);
     }
   }
-  // An attendance map is an index of attendeeIds; keep them consistent so the
-  // workspace can never read a status for somebody who is not on the list.
-  const attendeeIds = isStringArray(raw.attendeeIds) ? raw.attendeeIds : Object.keys(attendance);
+  let attendeeIds: string[] = [];
+  if (Array.isArray(raw.attendeeIds)) {
+    attendeeIds = raw.attendeeIds.filter((entry): entry is string => {
+      if (typeof entry === "string") return true;
+      flag(report, `${path}.attendeeIds contains a non-id entry (${JSON.stringify(entry)})`);
+      return false;
+    });
+  } else {
+    // no list supplied — the attendance map (if any) defines the attendees
+    attendeeIds = Object.keys(attendance);
+  }
   const attendanceClean: Record<string, AttendanceStatus> = {};
   for (const personId of attendeeIds) attendanceClean[personId] = attendance[personId] ?? "invited";
+
+  let minuteOverride: string | null = null;
+  if (raw.minuteOverride === null || raw.minuteOverride === undefined) minuteOverride = null;
+  else if (typeof raw.minuteOverride === "string") minuteOverride = raw.minuteOverride;
+  else flag(report, `${path}.minuteOverride is not text (${JSON.stringify(raw.minuteOverride)})`);
+
   return ok({
     id,
-    title: asText(raw.title),
-    purpose: asText(raw.purpose),
-    date: asText(raw.date),
-    startTime: asText(raw.startTime),
-    endTime: asText(raw.endTime),
-    location: asText(raw.location),
-    organizerId: asIdOrNull(raw.organizerId),
-    status: asEnum(raw.status, MEETING_STATUS, "upcoming"),
+    title: textOf(raw, "title", path, report),
+    purpose: textOf(raw, "purpose", path, report),
+    date: textOf(raw, "date", path, report),
+    startTime: textOf(raw, "startTime", path, report),
+    endTime: textOf(raw, "endTime", path, report),
+    location: textOf(raw, "location", path, report),
+    organizerId: idOf(raw, "organizerId", path, report),
+    status: enumOf(raw, "status", MEETING_STATUS, "upcoming", path, report),
     attendeeIds,
     attendance: attendanceClean,
-    closingNotes: asText(raw.closingNotes),
-    nextMeetingDate: asText(raw.nextMeetingDate),
-    minuteOverride: typeof raw.minuteOverride === "string" ? raw.minuteOverride : null,
-    createdAt: asText(raw.createdAt),
-    updatedAt: asText(raw.updatedAt),
+    closingNotes: textOf(raw, "closingNotes", path, report),
+    nextMeetingDate: textOf(raw, "nextMeetingDate", path, report),
+    minuteOverride,
+    createdAt: textOf(raw, "createdAt", path, report),
+    updatedAt: textOf(raw, "updatedAt", path, report),
   });
 }
 
-function checkAgendaItem(raw: unknown): Check<AgendaItem> {
+function checkAgendaItem(raw: unknown, path: string, report: Report): Check<AgendaItem> {
   if (!isRecord(raw)) return no("not an object");
   const id = typeof raw.id === "string" ? raw.id : "";
   const meetingId = typeof raw.meetingId === "string" ? raw.meetingId : "";
@@ -128,48 +197,33 @@ function checkAgendaItem(raw: unknown): Check<AgendaItem> {
   return ok({
     id,
     meetingId,
-    title: asText(raw.title),
-    description: asText(raw.description),
-    presenterId: asIdOrNull(raw.presenterId),
-    estimatedMinutes: asFinite(raw.estimatedMinutes, 10),
-    sortOrder: asFinite(raw.sortOrder, 0),
-    status: asEnum(raw.status, AGENDA_STATUS, "not-started"),
+    title: textOf(raw, "title", path, report),
+    description: textOf(raw, "description", path, report),
+    presenterId: idOf(raw, "presenterId", path, report),
+    estimatedMinutes: numOf(raw, "estimatedMinutes", 10, path, report),
+    sortOrder: numOf(raw, "sortOrder", 0, path, report),
+    status: enumOf(raw, "status", AGENDA_STATUS, "not-started", path, report),
   });
 }
 
-function checkPerson(raw: unknown): Check<Person> {
+function checkPerson(raw: unknown, path: string, report: Report): Check<Person> {
   if (!isRecord(raw)) return no("not an object");
   const id = typeof raw.id === "string" ? raw.id : "";
   if (!id) return no("missing id");
   return ok({
     id,
-    code: asText(raw.code),
-    fullName: asText(raw.fullName),
-    role: asText(raw.role),
-    department: asText(raw.department),
-    email: asText(raw.email),
-    phone: asText(raw.phone),
-    notes: asText(raw.notes),
-    createdAt: asText(raw.createdAt),
+    code: textOf(raw, "code", path, report),
+    fullName: textOf(raw, "fullName", path, report),
+    role: textOf(raw, "role", path, report),
+    department: textOf(raw, "department", path, report),
+    email: textOf(raw, "email", path, report),
+    phone: textOf(raw, "phone", path, report),
+    notes: textOf(raw, "notes", path, report),
+    createdAt: textOf(raw, "createdAt", path, report),
   });
 }
 
-function checkNote(raw: unknown): Check<MeetingNote> {
-  if (!isRecord(raw)) return no("not an object");
-  const id = typeof raw.id === "string" ? raw.id : "";
-  const meetingId = typeof raw.meetingId === "string" ? raw.meetingId : "";
-  if (!id) return no("missing id");
-  if (!meetingId) return no("missing meetingId");
-  return ok({
-    id,
-    meetingId,
-    content: asText(raw.content),
-    createdAt: asText(raw.createdAt),
-    updatedAt: asText(raw.updatedAt),
-  });
-}
-
-function checkDecision(raw: unknown): Check<Decision> {
+function checkNote(raw: unknown, path: string, report: Report): Check<MeetingNote> {
   if (!isRecord(raw)) return no("not an object");
   const id = typeof raw.id === "string" ? raw.id : "";
   const meetingId = typeof raw.meetingId === "string" ? raw.meetingId : "";
@@ -178,16 +232,13 @@ function checkDecision(raw: unknown): Check<Decision> {
   return ok({
     id,
     meetingId,
-    agendaItemId: asIdOrNull(raw.agendaItemId),
-    title: asText(raw.title),
-    description: asText(raw.description),
-    approvedBy: asIdOrNull(raw.approvedBy),
-    decisionDate: asText(raw.decisionDate),
-    status: asEnum(raw.status, DECISION_STATUS, "proposed"),
+    content: textOf(raw, "content", path, report),
+    createdAt: textOf(raw, "createdAt", path, report),
+    updatedAt: textOf(raw, "updatedAt", path, report),
   });
 }
 
-function checkActionItem(raw: unknown): Check<ActionItem> {
+function checkDecision(raw: unknown, path: string, report: Report): Check<Decision> {
   if (!isRecord(raw)) return no("not an object");
   const id = typeof raw.id === "string" ? raw.id : "";
   const meetingId = typeof raw.meetingId === "string" ? raw.meetingId : "";
@@ -196,34 +247,58 @@ function checkActionItem(raw: unknown): Check<ActionItem> {
   return ok({
     id,
     meetingId,
-    agendaItemId: asIdOrNull(raw.agendaItemId),
-    title: asText(raw.title),
-    description: asText(raw.description),
-    assigneeId: asIdOrNull(raw.assigneeId),
-    dueDate: asText(raw.dueDate),
-    priority: asEnum(raw.priority, PRIORITY, "medium"),
-    status: asEnum(raw.status, TASK_STATUS, "pending"),
-    createdAt: asText(raw.createdAt),
-    updatedAt: asText(raw.updatedAt),
+    agendaItemId: idOf(raw, "agendaItemId", path, report),
+    title: textOf(raw, "title", path, report),
+    description: textOf(raw, "description", path, report),
+    approvedBy: idOf(raw, "approvedBy", path, report),
+    decisionDate: textOf(raw, "decisionDate", path, report),
+    status: enumOf(raw, "status", DECISION_STATUS, "proposed", path, report),
   });
 }
 
-function checkSettings(raw: unknown, repaired: string[]): AppSettings {
-  const src = isRecord(raw) ? raw : {};
-  if (!isRecord(raw)) repaired.push("settings were missing; defaults applied.");
-  const merged: AppSettings = {
-    theme: asEnum(src.theme, ["terminal", "archive", "system"] as const, DEFAULT_SETTINGS.theme),
-    motionPreference: asEnum(src.motionPreference, ["immersive", "reduced", "off"] as const, DEFAULT_SETTINGS.motionPreference),
-    startupAnimation: typeof src.startupAnimation === "boolean" ? src.startupAnimation : DEFAULT_SETTINGS.startupAnimation,
-    fontSize: asEnum(src.fontSize, ["small", "medium", "large"] as const, DEFAULT_SETTINGS.fontSize),
-    density: asEnum(src.density, ["comfortable", "compact"] as const, DEFAULT_SETTINGS.density),
-    dateFormat: asEnum(src.dateFormat, ["iso", "dmy", "mdy"] as const, DEFAULT_SETTINGS.dateFormat),
-    timeFormat: asEnum(src.timeFormat, ["24h", "12h"] as const, DEFAULT_SETTINGS.timeFormat),
-  };
-  for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof AppSettings)[]) {
-    if (isRecord(raw) && raw[key] !== merged[key]) repaired.push(`settings.${key} was invalid; default applied.`);
+function checkActionItem(raw: unknown, path: string, report: Report): Check<ActionItem> {
+  if (!isRecord(raw)) return no("not an object");
+  const id = typeof raw.id === "string" ? raw.id : "";
+  const meetingId = typeof raw.meetingId === "string" ? raw.meetingId : "";
+  if (!id) return no("missing id");
+  if (!meetingId) return no("missing meetingId");
+  return ok({
+    id,
+    meetingId,
+    agendaItemId: idOf(raw, "agendaItemId", path, report),
+    title: textOf(raw, "title", path, report),
+    description: textOf(raw, "description", path, report),
+    assigneeId: idOf(raw, "assigneeId", path, report),
+    dueDate: textOf(raw, "dueDate", path, report),
+    priority: enumOf(raw, "priority", PRIORITY, "medium", path, report),
+    status: enumOf(raw, "status", TASK_STATUS, "pending", path, report),
+    createdAt: textOf(raw, "createdAt", path, report),
+    updatedAt: textOf(raw, "updatedAt", path, report),
+  });
+}
+
+function checkSettings(raw: unknown, report: Report, repaired: string[]): AppSettings {
+  if (!isRecord(raw)) {
+    // Absent defaults are harmless; a present-but-wrong settings block is not.
+    if (raw !== undefined) flag(report, "settings is not an object");
+    else repaired.push("settings were not supplied; defaults applied.");
+    return { ...DEFAULT_SETTINGS };
   }
-  return merged;
+  const startupAnimation = (() => {
+    if (raw.startupAnimation === undefined) return DEFAULT_SETTINGS.startupAnimation;
+    if (typeof raw.startupAnimation === "boolean") return raw.startupAnimation;
+    flag(report, `settings.startupAnimation is not a boolean (${JSON.stringify(raw.startupAnimation)})`);
+    return DEFAULT_SETTINGS.startupAnimation;
+  })();
+  return {
+    theme: enumOf(raw, "theme", THEME, DEFAULT_SETTINGS.theme, "settings", report),
+    motionPreference: enumOf(raw, "motionPreference", MOTION, DEFAULT_SETTINGS.motionPreference, "settings", report),
+    startupAnimation,
+    fontSize: enumOf(raw, "fontSize", FONT, DEFAULT_SETTINGS.fontSize, "settings", report),
+    density: enumOf(raw, "density", DENSITY, DEFAULT_SETTINGS.density, "settings", report),
+    dateFormat: enumOf(raw, "dateFormat", DATE_FORMAT, DEFAULT_SETTINGS.dateFormat, "settings", report),
+    timeFormat: enumOf(raw, "timeFormat", TIME_FORMAT, DEFAULT_SETTINGS.timeFormat, "settings", report),
+  };
 }
 
 function countRecords(data: AppData): Record<string, number> {
@@ -246,14 +321,17 @@ function countRecords(data: AppData): Record<string, number> {
  */
 export function validateAppData(payload: unknown): ValidationResult {
   const fatal: string[] = [];
+  const structural: string[] = [];
   const dropped: string[] = [];
   const repaired: string[] = [];
+  const report: Report = { structural };
   let migratedFrom: number | null = null;
 
   const finish = (data: AppData | null): ValidationResult => ({
     usable: fatal.length === 0 && data !== null,
-    clean: fatal.length === 0 && dropped.length === 0 && data !== null,
+    clean: fatal.length === 0 && structural.length === 0 && dropped.length === 0 && data !== null,
     fatal,
+    structural,
     dropped,
     repaired,
     migratedFrom,
@@ -267,6 +345,10 @@ export function validateAppData(payload: unknown): ValidationResult {
   }
 
   // ── meta + schema generation ───────────────────────────────
+  // Compatibility rule: the meta block is required (an absent block is a
+  // structural omission), `version` defaults to 1 when absent, and an absent
+  // `schemaVersion` means the original v1 records — the legacy path. Values
+  // that are present but of the wrong type are invalid metadata.
   const metaRaw = payload.meta;
   let metaVersion = 1;
   let firstRunAt = "";
@@ -274,12 +356,29 @@ export function validateAppData(payload: unknown): ValidationResult {
   let extras: Record<string, unknown> = {};
   if (isRecord(metaRaw)) {
     extras = { ...metaRaw };
-    metaVersion = asFinite(metaRaw.version, 1);
-    firstRunAt = asText(metaRaw.firstRunAt);
-    adapter = asText(metaRaw.adapter) || adapter;
-    const declared = typeof metaRaw.schemaVersion === "number" && Number.isFinite(metaRaw.schemaVersion)
-      ? metaRaw.schemaVersion
-      : 1;
+    if (metaRaw.version !== undefined) {
+      if (typeof metaRaw.version === "number" && Number.isFinite(metaRaw.version)) metaVersion = metaRaw.version;
+      else flag(report, `meta.version is not a number (${JSON.stringify(metaRaw.version)})`);
+    }
+    if (metaRaw.firstRunAt !== undefined && typeof metaRaw.firstRunAt !== "string") {
+      flag(report, `meta.firstRunAt is not text (${JSON.stringify(metaRaw.firstRunAt)})`);
+    } else {
+      firstRunAt = typeof metaRaw.firstRunAt === "string" ? metaRaw.firstRunAt : "";
+      if (metaRaw.firstRunAt === undefined) repaired.push("meta.firstRunAt was not supplied; left empty.");
+    }
+    if (metaRaw.adapter !== undefined && typeof metaRaw.adapter !== "string") {
+      flag(report, `meta.adapter is not text (${JSON.stringify(metaRaw.adapter)})`);
+    } else if (typeof metaRaw.adapter === "string" && metaRaw.adapter) {
+      adapter = metaRaw.adapter;
+    }
+    const declared = (() => {
+      if (metaRaw.schemaVersion === undefined) return 1;
+      if (typeof metaRaw.schemaVersion === "number" && Number.isFinite(metaRaw.schemaVersion)) {
+        return metaRaw.schemaVersion;
+      }
+      flag(report, `meta.schemaVersion is not a number (${JSON.stringify(metaRaw.schemaVersion)})`);
+      return 1;
+    })();
     if (declared > SCHEMA_VERSION) {
       fatal.push(
         `These records were written by a newer RHODES schema (v${declared}); this build understands v${SCHEMA_VERSION}. Update the application before opening them.`,
@@ -288,8 +387,10 @@ export function validateAppData(payload: unknown): ValidationResult {
       migratedFrom = declared;
       repaired.push(`Records migrated from schema v${declared} to v${SCHEMA_VERSION}.`);
     }
+  } else if (metaRaw === undefined) {
+    flag(report, "meta is missing");
   } else {
-    repaired.push("The meta block was missing; a new one has been generated.");
+    flag(report, `meta is not an object (${JSON.stringify(metaRaw)})`);
   }
   if (fatal.length) return finish(null);
 
@@ -302,10 +403,16 @@ export function validateAppData(payload: unknown): ValidationResult {
   };
 
   // ── collections ────────────────────────────────────────────
+  // A missing collection is a structural omission (never an empty list): an
+  // import that simply forgot `decisions` must not wipe the decision log.
   const list = (key: string): unknown[] | null => {
     const raw = payload[key];
-    if (raw === undefined || raw === null) {
-      repaired.push(`${key} was missing; treated as empty.`);
+    if (raw === undefined) {
+      flag(report, `${key} is missing`);
+      return [];
+    }
+    if (raw === null) {
+      flag(report, `${key} is null`);
       return [];
     }
     if (!Array.isArray(raw)) {
@@ -315,14 +422,15 @@ export function validateAppData(payload: unknown): ValidationResult {
     return raw;
   };
 
-  const pull = <T,>(key: string, check: (raw: unknown) => Check<T>): T[] | null => {
+  const pull = <T,>(key: string, check: (raw: unknown, path: string, report: Report) => Check<T>): T[] | null => {
     const raw = list(key);
     if (raw === null) return null;
     const out: T[] = [];
     raw.forEach((entry, index) => {
-      const result = check(entry);
+      const path = `${key}[${index}]`;
+      const result = check(entry, path, report);
       if (result.ok) out.push(result.value);
-      else dropped.push(`${key}[${index}] — ${result.reason}`);
+      else dropped.push(`${path} — ${result.reason}`);
     });
     return out;
   };
@@ -337,7 +445,7 @@ export function validateAppData(payload: unknown): ValidationResult {
     return finish(null);
   }
 
-  const settings = checkSettings(payload.settings, repaired);
+  const settings = checkSettings(payload.settings, report, repaired);
 
   const data: AppData = {
     ...(payload as unknown as AppData),
@@ -359,4 +467,12 @@ export function summarise(problems: string[], limit = 3): string {
   if (!problems.length) return "";
   const head = problems.slice(0, limit).join("; ");
   return problems.length > limit ? `${head}; (+${problems.length - limit} more)` : head;
+}
+
+/** Why an import cannot be applied — empty when the file is acceptable. */
+export function importRejectionReason(result: ValidationResult): string {
+  if (result.usable && result.clean) return "";
+  const problems = [...result.fatal, ...result.structural, ...result.dropped];
+  if (!problems.length) return "File does not match the RHODES data schema.";
+  return problems.slice(0, 4).join(" · ");
 }

@@ -236,9 +236,15 @@ editor. JSON backup/restore and demo reset are store-level operations.
   recovery screen. Demonstration data is only ever written by an explicit
   choice on that screen.
 - **Validation is real.** `src/services/validation.ts` checks every record
-  (types, enums, ids, arrays/maps), repairs cosmetic gaps, reports records it
-  has to set aside, and stamps `meta.schemaVersion`. Version 1 payloads migrate
-  in memory; the new generation is written by the next normal save.
+  (types, enums, ids, arrays/maps) and stamps `meta.schemaVersion`. Version 1
+  payloads migrate in memory; the new generation is written by the next normal
+  save. Three failure classes are distinguished: *fatal* (the document is not a
+  RHODES record set), *structural* (one of the six collections is missing, the
+  `meta` block is absent/invalid, or a field holds an invalid value) and
+  *dropped* (a record that cannot be represented). Only harmless cosmetic gaps
+  (an absent optional string, an absent default) are repaired. Loading may
+  repair structural gaps **after** the original has been preserved; an import
+  never does — a backup missing a collection would otherwise wipe it.
 - **A screen fault cannot blank the app.** `components/ErrorBoundary.tsx`
   keeps the HUD and navigation alive and offers retry, download of the stored
   records, and reload.
@@ -246,7 +252,15 @@ editor. JSON backup/restore and demo reset are store-level operations.
   demands an explicit confirmation that shows incoming vs current counts, and
   `importJSON()` then validates → snapshots the live payload → writes → and
   only then commits to React state. Any failure leaves the existing records
-  exactly as they were.
+  exactly as they were, and the rejection names the missing collection, invalid
+  value or metadata problem.
+- **A failed preservation locks writing.** If the loader had to preserve the
+  stored payload (records set aside or values repaired) and that preserved copy
+  cannot be written, the only copy of the records is the live key — so the
+  store refuses every write path (`mutate`, `persist`, `flush`, import, demo
+  reset, "continue" and dismiss) until the operator downloads the preserved
+  copy, or a later snapshot succeeds. The notice shows *WRITES LOCKED* and
+  cannot be dismissed while the lock is active.
 
 > The configuration screen labels this adapter accurately as provisional:
 > it is *not* the final SQLite database.

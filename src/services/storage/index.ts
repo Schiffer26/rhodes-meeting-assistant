@@ -16,7 +16,7 @@
 import type { AppData } from "@/types";
 import { DEFAULT_SETTINGS } from "@/types";
 import { buildSeedData } from "@/data/seed";
-import { SCHEMA_VERSION, summarise, validateAppData } from "@/services/validation";
+import { SCHEMA_VERSION, importRejectionReason, validateAppData } from "@/services/validation";
 
 export const STORAGE_KEY = "rhodes.prototype.db.v1";
 /** Preserved copies live beside the live key and are never auto-deleted by a load. */
@@ -210,26 +210,35 @@ export class LocalStorageAdapter implements StorageAdapter {
       });
     }
 
-    // Records were dropped: the surviving set is used in memory, the exact
-    // original bytes are preserved first, and nothing is written over them.
-    if (result.dropped.length) {
-      const detail = {
-        message: `${result.dropped.length} stored ${result.dropped.length === 1 ? "record" : "records"} could not be read and ${result.dropped.length === 1 ? "was" : "were"} set aside. The rest of the registry is intact.`,
-        details: result.dropped.slice(0, 6),
+    // The payload is usable but had to be altered (records set aside and/or
+    // values repaired). The exact original bytes are preserved first; nothing is
+    // written over them. If the copy cannot be written the store keeps the
+    // console read-only until the operator has a second copy (see
+    // `preservedCopyMissing` on RecoveryInfo), so the original cannot be lost.
+    if (result.dropped.length || result.structural.length) {
+      const parts: string[] = [];
+      if (result.dropped.length) {
+        parts.push(
+          `${result.dropped.length} stored ${result.dropped.length === 1 ? "record" : "records"} could not be read and ${result.dropped.length === 1 ? "was" : "were"} set aside.`,
+        );
+      }
+      if (result.structural.length) {
+        parts.push(
+          `${result.structural.length} ${result.structural.length === 1 ? "value" : "values"} could not be read and ${result.structural.length === 1 ? "was" : "were"} repaired for display.`,
+        );
+      }
+      const saved = this.snapshot(raw, "invalid-records");
+      const recovery: RecoveryInfo = {
+        kind: "repaired",
+        message: `${parts.join(" ")} The rest of the registry is intact.`,
+        details: [...result.dropped, ...result.structural].slice(0, 6),
+        snapshotKey: "key" in saved ? saved.key : null,
+        snapshotError: "error" in saved ? saved.error : undefined,
+        preservedRaw: raw,
         counts: {
           kept: result.counts.total,
           dropped: result.dropped.length,
         },
-      };
-      const saved = this.snapshot(raw, "invalid-records");
-      const recovery: RecoveryInfo = {
-        kind: "repaired",
-        message: detail.message,
-        details: detail.details,
-        snapshotKey: "key" in saved ? saved.key : null,
-        snapshotError: "error" in saved ? saved.error : undefined,
-        preservedRaw: raw,
-        counts: detail.counts,
       };
       return { data: result.data, recovery };
     }
@@ -319,5 +328,5 @@ export function validateImport(payload: unknown): payload is AppData {
 /** Short, human-readable rejection reason for an import payload. */
 export function describeRejection(payload: unknown): string {
   const result = validateAppData(payload);
-  return summarise([...result.fatal, ...result.dropped]) || "File does not match the RHODES data schema.";
+  return importRejectionReason(result) || "File does not match the RHODES data schema.";
 }

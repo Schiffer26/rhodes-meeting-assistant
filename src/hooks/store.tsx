@@ -11,7 +11,7 @@ import type {
 import { DEFAULT_SETTINGS } from "@/types";
 import { emptyAppData, normaliseOutcome, storage } from "@/services/storage";
 import type { LoadOutcome, RecoveryInfo, StorageAdapter } from "@/services/storage";
-import { summarise, validateAppData } from "@/services/validation";
+import { importRejectionReason, validateAppData } from "@/services/validation";
 import { buildSeedData } from "@/data/seed";
 import { todayISO, uid } from "@/utils/helpers";
 
@@ -58,7 +58,8 @@ export interface Store {
   setAttendance: (meetingId: ID, personId: ID, status: AttendanceStatus) => void;
   // settings & maintenance
   updateSettings: (patch: Partial<AppSettings>) => void;
-  flush: () => void;
+  /** Force a write now. Resolves with the outcome so callers cannot claim success falsely. */
+  flush: () => Promise<{ ok: boolean; error?: string }>;
   exportJSON: () => string;
   /** Read-only inspection of a backup file: nothing is written or replaced. */
   previewImport: (json: string) => ImportPreview;
@@ -70,12 +71,21 @@ export interface Store {
    * records exactly as they were.
    */
   importJSON: (json: string) => Promise<ImportResult>;
-  resetToDemo: () => void;
+  resetToDemo: () => { ok: boolean; error?: string };
   restoreDefaultSettings: () => void;
   // recovery surface (1.3.11)
   recovery: RecoveryInfo | null;
   /** True while the recovered payload blocks normal use (corrupt / invalid). */
   recoveryBlocking: boolean;
+  /** A payload had to be preserved but no second copy exists yet. */
+  preservedCopyMissing: boolean;
+  /**
+   * True while the original payload is the only copy: every mutation and every
+   * write is refused so the stored bytes cannot be overwritten.
+   */
+  writesBlocked: boolean;
+  /** Operator has downloaded the preserved payload — a second copy exists. */
+  markPreservedCopyDownloaded: () => void;
   /** Acknowledge the notice and continue with the records currently in memory. */
   dismissRecovery: () => void;
   /** Explicit, confirmed choice to start from the demonstration dataset. */
@@ -138,6 +148,14 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
   }
   const [data, setData] = useState<AppData | null>(bootRef.current.data);
   const [recovery, setRecovery] = useState<RecoveryInfo | null>(bootRef.current.recovery);
+  // A preserved payload with no snapshot key means the loader could not copy it:
+  // the live key holds the only copy, so nothing may be written until the
+  // operator has downloaded it (or a snapshot appears some other way).
+  const [preservedCopyConfirmed, setPreservedCopyConfirmed] = useState(false);
+  const preservedCopyMissing = !!recovery && !!recovery.preservedRaw && !recovery.snapshotKey;
+  const writesBlocked = preservedCopyMissing && !preservedCopyConfirmed;
+  const writesBlockedRef = useRef(writesBlocked);
+  writesBlockedRef.current = writesBlocked;
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const ready = data !== null;
   const hydratedOnFirstRender = useRef(bootRef.current.data !== null);
@@ -173,6 +191,9 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
   }, [source]);
 
   const persist = useCallback((next: AppData) => {
+    // Defence in depth: `mutate` already refuses while writes are blocked, and a
+    // timer scheduled before the lock cannot exist (the lock is known at boot).
+    if (writesBlockedRef.current) return;
     if (persistTimer.current) window.clearTimeout(persistTimer.current);
     setSaveState("saving");
     persistTimer.current = window.setTimeout(() => {
@@ -184,12 +205,14 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
   }, [source]);
 
   const mutate = useCallback((fn: (d: AppData) => AppData) => {
+    if (writesBlockedRef.current) return;   // read-only until a second copy exists
     setData((prev) => {
       if (!prev) return prev;
       const next = fn(prev);
       persist(next);
       return next;
     });
+    return { ok: true };
   }, [persist]);
 
   const touch = (m: Meeting): Meeting => ({ ...m, updatedAt: new Date().toISOString() });
@@ -382,13 +405,27 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     mutate((d) => ({ ...d, settings: { ...d.settings, ...patch } }));
   }, [mutate]);
 
-  const flush = useCallback(() => {
-    if (!data) return;
+  const flush = useCallback(async (): Promise<{ ok: boolean; error?: string }> => {
+    if (!data) return { ok: false, error: "No records are loaded." };
+    if (writesBlockedRef.current) {
+      return {
+        ok: false,
+        error: "Writes are blocked until the preserved copy of the stored records has been downloaded.",
+      };
+    }
     if (persistTimer.current) window.clearTimeout(persistTimer.current);
     setSaveState("saving");
-    source.save(data)
-      .then(() => setSaveState("saved"))
-      .catch(() => setSaveState("error"));
+    try {
+      await source.save(data);
+      setSaveState("saved");
+      return { ok: true };
+    } catch (error) {
+      setSaveState("error");
+      return {
+        ok: false,
+        error: `Could not write to storage (${error instanceof Error ? error.message : String(error)}). Nothing was persisted.`,
+      };
+    }
   }, [data, source]);
 
   const exportJSON = useCallback((): string => JSON.stringify(data, null, 2), [data]);
@@ -414,16 +451,16 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     try {
       parsed = JSON.parse(json);
     } catch {
-      return { ok: false, error: "File is not valid JSON." };
-    }
-    const result = validateAppData(parsed);
-    if (!result.usable || !result.data) {
-      return { ok: false, error: summarise(result.fatal) || "File does not match the RHODES data schema." };
-    }
-    if (!result.clean) {
       return {
         ok: false,
-        error: `Import refused — ${summarise(result.dropped)}. No records were changed.`,
+        error: "Import refused — the file is not valid JSON. No records were changed.",
+      };
+    }
+    const result = validateAppData(parsed);
+    if (!result.usable || !result.data || !result.clean) {
+      return {
+        ok: false,
+        error: `Import refused — ${importRejectionReason(result)}. No records were changed.`,
       };
     }
     return { ok: true, counts: result.counts, current: countOf(data), warnings: result.repaired };
@@ -442,11 +479,14 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     }
 
     const result = validateAppData(parsed);
-    if (!result.usable || !result.data) {
-      return { ok: false, error: summarise(result.fatal) || "File does not match the RHODES data schema." };
+    if (!result.usable || !result.data || !result.clean) {
+      return { ok: false, error: `Import refused — ${importRejectionReason(result)}. No records were changed.` };
     }
-    if (!result.clean) {
-      return { ok: false, error: `Import refused — ${summarise(result.dropped)}. No records were changed.` };
+    if (writesBlockedRef.current) {
+      return {
+        ok: false,
+        error: "Writes are blocked until the preserved copy of the stored records has been downloaded. No records were changed.",
+      };
     }
 
     // 1 · a recovery snapshot is mandatory before anything is replaced
@@ -490,9 +530,25 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     return { ok: true, snapshotKey, counts: result.counts };
   }, [source]);
 
-  const dismissRecovery = useCallback(() => setRecovery(null), []);
+  const markPreservedCopyDownloaded = useCallback(() => setPreservedCopyConfirmed(true), []);
+
+  /**
+   * A notice may be dismissed only when it is purely informational. While the
+   * original payload is the only copy, the notice stays and writes stay locked:
+   * dismissing must not be a way around the protection.
+   */
+  const dismissRecovery = useCallback(() => {
+    if (writesBlockedRef.current) return;
+    setRecovery(null);
+  }, []);
 
   const startWithDemoData = useCallback(async (): Promise<{ ok: boolean; error?: string }> => {
+    if (writesBlockedRef.current) {
+      return {
+        ok: false,
+        error: "A second copy of the stored records must exist first — download the preserved copy to unlock writing.",
+      };
+    }
     const seed = buildSeedData();
     try {
       await source.save(seed);
@@ -508,7 +564,13 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     return { ok: true };
   }, [source]);
 
-  const resetToDemo = useCallback(() => {
+  const resetToDemo = useCallback((): { ok: boolean; error?: string } => {
+    if (writesBlockedRef.current) {
+      return {
+        ok: false,
+        error: "Writes are blocked until the preserved copy of the stored records has been downloaded. Nothing was changed.",
+      };
+    }
     const seed = buildSeedData();
     // Keep operator preferences through the demo reset.
     setData((prev) => {
@@ -516,6 +578,7 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
       persist(next);
       return next;
     });
+    return { ok: true };
   }, [persist]);
 
   const restoreDefaultSettings = useCallback(() => {
@@ -525,6 +588,7 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
   const value = useMemo<Store>(() => ({
     ready: ready, data: data ?? LOADING_DATA, saveState,
     recovery, recoveryBlocking: recovery !== null && (recovery.kind === "corrupt" || recovery.kind === "invalid"),
+    preservedCopyMissing, writesBlocked, markPreservedCopyDownloaded,
     createMeeting, updateMeeting, deleteMeeting, setMeetingStatus,
     addAgendaItem, updateAgendaItem, deleteAgendaItem, moveAgendaItem, setAgendaStatus,
     createPerson, updatePerson, deletePerson,
@@ -535,7 +599,8 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     updateSettings, flush, exportJSON, previewImport, importJSON, resetToDemo, restoreDefaultSettings,
     dismissRecovery, startWithDemoData,
   }), [
-    ready, data, saveState, recovery, previewImport, dismissRecovery, startWithDemoData, createMeeting, updateMeeting, deleteMeeting, setMeetingStatus,
+    ready, data, saveState, recovery, previewImport, dismissRecovery, startWithDemoData,
+    preservedCopyMissing, writesBlocked, markPreservedCopyDownloaded, createMeeting, updateMeeting, deleteMeeting, setMeetingStatus,
     addAgendaItem, updateAgendaItem, deleteAgendaItem, moveAgendaItem, setAgendaStatus,
     createPerson, updatePerson, deletePerson, saveNote,
     createDecision, updateDecision, deleteDecision,

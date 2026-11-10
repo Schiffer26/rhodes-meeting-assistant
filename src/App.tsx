@@ -349,9 +349,13 @@ function Core() {
     return () => window.removeEventListener("rhodes:new-meeting", h);
   }, []);
 
-  // Ctrl+S → force persist
+  // Ctrl+S → force persist; report what actually happened
   useEffect(() => {
-    const h = () => { flush(); toast.success("All records synchronized to local storage."); };
+    const h = async () => {
+      const res = await flush();
+      if (res.ok) toast.success("All records synchronized to local storage.");
+      else toast.error(res.error ?? "Records could not be saved.");
+    };
     window.addEventListener("rhodes:flush", h);
     return () => window.removeEventListener("rhodes:flush", h);
   }, [flush, toast]);
