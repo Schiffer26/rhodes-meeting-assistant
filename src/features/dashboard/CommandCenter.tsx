@@ -78,9 +78,9 @@ export function CommandCenter({ navigate }: { navigate: (r: Route) => void }) {
     const isCyan = tone === "cyan";
     const isDark = tone === "dark";
     const bg = isCyan ? "var(--accent)" : isDark ? "var(--surface-2)" : "var(--panel-white)";
-    const fg = isCyan ? "#0E1012" : isDark ? "var(--text)" : "var(--text-dark)";
-    const subFg = isCyan ? "rgba(14,16,18,0.72)" : isDark ? "var(--text-3)" : "rgba(23,25,27,0.58)";
-    const ruleFg = isCyan ? "#0E1012" : "var(--accent)";
+    const fg = isCyan ? "var(--on-accent)" : isDark ? "var(--text)" : "var(--text-dark)";
+    const subFg = isCyan ? "var(--on-accent-dim)" : isDark ? "var(--text-3)" : "rgba(23,25,27,0.58)";
+    const ruleFg = isCyan ? "var(--on-accent)" : "var(--accent)";
     const sizeClass = size === "large" ? "lg" : size === "medium" ? "md" : "sm";
 
     return (
@@ -182,8 +182,8 @@ export function CommandCenter({ navigate }: { navigate: (r: Route) => void }) {
         <StaggerItem x={-14}>
           <div className="plate clip-corner rail-plate" style={{ borderLeft: "4px solid var(--accent)", boxShadow: "var(--shadow)" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-              <span className="mono-label" style={{ color: "rgba(23,25,27,0.6)" }}>// Upcoming Schedule</span>
-              <span className="mono rail-count" style={{ fontSize: 9, letterSpacing: "0.16em", color: "rgba(23,25,27,0.45)" }}>T+72H</span>
+              <span className="mono-label" style={{ color: "var(--plate-dim)" }}>// Upcoming Schedule</span>
+              <span className="mono rail-count" style={{ fontSize: 9, letterSpacing: "0.16em", color: "var(--plate-micro)" }}>T+72H</span>
             </div>
             <div className="metric-value rail-metric" style={{ color: "var(--text-dark)" }}>
               {String(upcoming.length).padStart(2, "0")}
@@ -202,7 +202,7 @@ export function CommandCenter({ navigate }: { navigate: (r: Route) => void }) {
                   </span>
                 </button>
               ))}
-              {upcoming.length === 0 && <span className="small" style={{ color: "rgba(23,25,27,0.55)" }}>Schedule clear.</span>}
+              {upcoming.length === 0 && <span className="small" style={{ color: "var(--plate-note)" }}>Schedule clear.</span>}
             </div>
           </div>
         </StaggerItem>

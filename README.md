@@ -107,6 +107,37 @@ Never hardcode a hex value in a component — extend the variable set instead.
 Status tones (`--ok`, `--warn`, `--crit`, `--amber`) keep identical meaning in
 both themes.
 
+### ARCHIVE palette (cool pearl-steel)
+
+ARCHIVE is a bright technical archive, not a generic light mode: a pearl-steel
+workspace, near-white plates, a distinct raised/inset series behind them, and
+graphite type on manganese-cyan accents.
+
+| role | token | value |
+| --- | --- | --- |
+| workspace ground | `--bg` | `#E8EEF1` |
+| recessed ground | `--bg-deep` | `#D9E2E7` |
+| primary plate | `--surface` / `--panel-white` | `#F8FBFC` / `#FFFFFF` |
+| raised plate | `--surface-2` | `#E3EDF3` |
+| sunken band | `--surface-3` | `#D3DFE6` |
+| input well | `--field-bg` | `#F1F6F9` |
+| structure | `--border` / `--border-soft` | `#9CADB8` / `#CBD6DD` |
+| type | `--text` / `--text-2` / `--text-3` | `#1A2730` / `#43535D` / `#5A6A74` |
+| accent | `--accent` / `--accent-hover` | `#00708F` / `#005C77` |
+| on accent | `--on-accent` / `--on-accent-dim` | `#FFFFFF` / `rgba(255,255,255,.88)` |
+
+Rules that keep the two themes honest:
+
+- `--on-accent` / `--on-accent-dim` are the only colours allowed on an accent
+  fill: graphite ink in TERMINAL (dark on cyan), white in ARCHIVE (white on
+  deep cyan). A cyan label on a cyan chip is a bug in both themes.
+- The HUD stays graphite in ARCHIVE. `--hud-*` is not remapped by the light
+  theme, so `.hud-brand`, `.hud-btn` and their hover washes stay dark; hover
+  uses `--hud-hover` instead of a theme-neutral white overlay.
+- Every ARCHIVE-only correction is scoped with `html[data-theme="archive"] …`
+  next to the shared rule, never by editing the shared rule alone — that is
+  what keeps TERMINAL pixel-identical.
+
 Density and font scale are also variable-driven:
 `html[data-density="compact"]` and `html[data-font="small|large"]` adjust
 `--pad-*` and `--fs-*` tokens for the whole interface.

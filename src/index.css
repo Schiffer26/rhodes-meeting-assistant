@@ -44,6 +44,9 @@
   --plate-line: rgba(23, 25, 27, 0.16);
   --plate-dim: rgba(23, 25, 27, 0.6);
   --plate-dim-2: rgba(23, 25, 27, 0.82);
+  /* micro counter and empty-state note on a light plate */
+  --plate-micro: rgba(23, 25, 27, 0.45);
+  --plate-note: rgba(23, 25, 27, 0.55);
 
   /* HUD (operational system toolbar) */
   --hud-bg: #0F1113;
@@ -51,6 +54,13 @@
   --hud-fg: #F1F2F0;
   --hud-dim: #7C838A;
   --hud-line: #272C32;
+  /* the HUD is graphite in both themes, so its hover wash is its own token
+     instead of the (light, in ARCHIVE) workspace surface */
+  --hud-hover: #30363D;
+
+  /* type/line colour used on top of a solid accent fill */
+  --on-accent: #0E1012;
+  --on-accent-dim: rgba(14, 16, 18, 0.72);
 
   --shadow: 0 12px 34px rgba(0, 0, 0, 0.38);
   --shadow-sm: 0 3px 12px rgba(0, 0, 0, 0.26);
@@ -90,62 +100,71 @@
   --font-mono: "JetBrains Mono", "Cascadia Mono", monospace;
 }
 
-/* ── ARCHIVE — bright documentation / administrative environment ─────── */
+/* ── ARCHIVE — pearl-steel administrative environment ─────────────────────
+   Cool pearl-grey workspace, near-white information panels, graphite type and
+   deep Rhodes cyan. Four steps of value keep the layers apart:
+     ground (bg)  <  recessed (surface-2/field)  <  panel (surface)  <  plate (white)
+   ──────────────────────────────────────────────────────────────────────── */
 html[data-theme="archive"] {
-  --bg: #D9DDE0;
-  --bg-deep: #C7CCD0;
-  --surface: #F5F5F3;
-  --surface-2: #E7E9E9;
-  --surface-3: #D0D4D6;
+  --bg: #E8EEF1;
+  --bg-deep: #D9E2E7;
+  --surface: #F8FBFC;
+  --surface-2: #E3EDF3;
+  --surface-3: #D3DFE6;
   --panel-white: #FFFFFF;
-  --field-bg: #EDEFEF;
-  --ink: #17191B;
-  --border: #B1B1B1;
-  --border-soft: #C9CED2;
-  --text: #17191B;
-  --text-2: #3F4448;
-  --text-3: #6C7276;
-  --text-dark: #17191B;
-  --accent: #009FCB;
-  --accent-hover: #0075A9;
-  --accent-blue: #087FBD;
-  --accent-dim: rgba(0, 159, 203, 0.1);
-  --ok: #2E9E6B;
-  --warn: #E96C2B;
-  --crit: #B83936;
-  --amber: #D6B900;
+  --field-bg: #F1F6F9;
+  --ink: #1A2730;
+  --border: #9CADB8;
+  --border-soft: #CBD6DD;
+  --text: #1A2730;
+  --text-2: #43535D;
+  --text-3: #5A6A74;
+  --text-dark: #1A2730;
+  --accent: #00708F;
+  --accent-hover: #005C77;
+  --accent-blue: #176B91;
+  --accent-dim: rgba(0, 112, 143, 0.1);
+  --on-accent: #FFFFFF;
+  --on-accent-dim: rgba(255, 255, 255, 0.88);
+  --ok: #106B45;
+  --warn: #A2460C;
+  --crit: #AC3230;
+  --amber: #776100;
 
-  --plate-line: rgba(23, 25, 27, 0.14);
-  --plate-dim: rgba(23, 25, 27, 0.6);
-  --plate-dim-2: rgba(23, 25, 27, 0.82);
+  --plate-line: rgba(26, 39, 48, 0.14);
+  --plate-dim: rgba(26, 39, 48, 0.72);
+  --plate-dim-2: rgba(26, 39, 48, 0.88);
+  --plate-micro: rgba(26, 39, 48, 0.66);
+  --plate-note: rgba(26, 39, 48, 0.72);
 
   --hud-bg: #1A1D1F;
   --hud-bg-2: #23272A;
   --hud-fg: #F1F2F0;
-  --hud-dim: #8A9198;
+  --hud-dim: #949CA3;
   --hud-line: #2C3135;
+  --hud-hover: #2B3238;
 
-  --shadow: 0 10px 26px rgba(23, 25, 27, 0.13);
-  --shadow-sm: 0 2px 8px rgba(23, 25, 27, 0.09);
+  --shadow: 0 2px 6px rgba(26, 39, 48, 0.09), 0 16px 34px rgba(26, 39, 48, 0.14);
+  --shadow-sm: 0 1px 2px rgba(26, 39, 48, 0.07), 0 6px 16px rgba(26, 39, 48, 0.08);
 
-  /* environment — gray architecture, bright glazing */
-  --env-void: #C9CED2;
-  --env-far: #BFC5C9;
-  --env-mid: #CED3D7;
-  --env-near: #AFB5B9;
-  --env-beam: #A9AFB4;
-  --env-beam-hi: #C4CACF;
-  --env-glass: #E9EDEF;
-  --env-sky: #F4F8FA;
-  --env-sea: #AFBFC7;
-  --env-horizon: #7CA0AF;
-  --env-line: #929A9F;
-  --env-rivet: #868E94;
-  --env-cyan: #009FCB;
-  --env-warm: #E96C2B;
+  /* environment — pearl glazing, cool metal structure, bright daylight */
+  --env-void: #DCE5EA;
+  --env-far: #C9D6DD;
+  --env-mid: #E1E9EE;
+  --env-near: #B7C6D0;
+  --env-beam: #AEBDC8;
+  --env-beam-hi: #D6E1E8;
+  --env-glass: #EEF5F9;
+  --env-sky: #F8FCFD;
+  --env-sea: #B6C8D3;
+  --env-horizon: #6E97AB;
+  --env-line: #8FA2AE;
+  --env-rivet: #7C8E9A;
+  --env-cyan: #00708F;
+  --env-warm: #C25A1B;
   --env-white: #FFFFFF;
-  --env-haze: rgba(0, 159, 203, 0.07);
-  --env-shade: rgba(23, 25, 27, 0.1);
+  --env-haze: rgba(0, 112, 143, 0.075);
+  --env-shade: rgba(26, 39, 48, 0.1);
 }
 
 html[data-font="small"] {
@@ -235,7 +254,7 @@ html[data-theme="archive"] .panel { box-shadow: var(--shadow-sm); }
 .panel.ink { background: var(--surface-2); }
 .panel.raised { background: var(--surface-2); border-color: var(--border); }
 .panel.white { background: var(--panel-white); color: var(--text-dark); border-color: transparent; }
-.panel.accent { background: var(--accent); color: #0E1012; border-color: var(--accent); }
+.panel.accent { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
 .panel-2 { background: var(--surface-2); }
 .panel-head {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
@@ -463,7 +482,7 @@ html[data-theme="archive"] .btn-primary:hover { color: #fff; }
 
 /* solid badges — used where a status must dominate a dense row */
 .badge-solid { color: #101214; border-color: transparent; font-weight: 700; }
-.badge-solid.badge-cyan { background: var(--accent); color: #0E1012; }
+.badge-solid.badge-cyan { background: var(--accent); color: var(--on-accent); }
 .badge-solid.badge-green { background: var(--ok); color: #0E1012; }
 .badge-solid.badge-amber { background: var(--warn); color: #14100C; }
 .badge-solid.badge-red { background: var(--crit); color: #fff; }
@@ -518,7 +537,7 @@ html[data-theme="archive"] .seg button.on { color: #fff; }
 }
 html[data-theme="archive"] .modal-backdrop { background: rgba(120, 126, 130, 0.5); }
 html[data-theme="archive"] .modal-panel { background: var(--panel-white); }
-html[data-theme="archive"] .input, html[data-theme="archive"] .select, html[data-theme="archive"] .textarea { border-color: #A8AEB2; }
+html[data-theme="archive"] .input, html[data-theme="archive"] .select, html[data-theme="archive"] .textarea { border-color: var(--border); }
 html[data-theme="archive"] .input:focus, html[data-theme="archive"] .select:focus, html[data-theme="archive"] .textarea:focus { border-color: var(--accent); }
 .modal-panel {
   position: relative;
@@ -615,7 +634,7 @@ html[data-theme="archive"] .input:focus, html[data-theme="archive"] .select:focu
   color: inherit; text-align: left;
   transition: background-color 140ms linear;
 }
-.hud-brand:hover { background: var(--surface-2); }
+.hud-brand:hover { background: var(--hud-hover); }
 .hud-wordmark {
   font-family: var(--font-display); font-weight: 700; font-size: 21px;
   letter-spacing: 0.22em; line-height: 1; text-transform: uppercase;
@@ -623,7 +642,7 @@ html[data-theme="archive"] .input:focus, html[data-theme="archive"] .select:focu
 .hud-sub { font-family: var(--font-mono); font-size: 8.5px; letter-spacing: 0.2em; color: var(--hud-dim); margin-top: 4px; }
 .hud-code {
   font-family: var(--font-mono); font-size: 10px; font-weight: 700; letter-spacing: 0.2em;
-  background: var(--accent); color: #0E1012; padding: 5px 9px; white-space: nowrap;
+  background: var(--accent); color: var(--on-accent); padding: 5px 9px; white-space: nowrap;
 }
 .hud-title {
   font-family: var(--font-display); font-weight: 600; font-size: 23px;
@@ -635,7 +654,7 @@ html[data-theme="archive"] .input:focus, html[data-theme="archive"] .select:focu
   width: 34px; height: 34px; background: transparent; border: 1px solid transparent;
   color: var(--hud-dim); cursor: pointer; transition: all 130ms linear;
 }
-.hud-btn:hover { color: var(--hud-fg); border-color: var(--hud-line); background: var(--surface-2); }
+.hud-btn:hover { color: var(--hud-fg); border-color: var(--hud-line); background: var(--hud-hover); }
 .hud-search {
   display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 14px;
   background: #000; border: 1px solid var(--hud-line); cursor: pointer;
@@ -703,11 +722,11 @@ html[data-theme="archive"] .page-backdrop-art { opacity: 0.75; }
 html[data-theme="archive"] .page-backdrop-scrim {
   background:
     linear-gradient(180deg,
-      rgba(217, 221, 224, 0.52) 0%,
-      rgba(217, 221, 224, 0.26) 40%,
-      rgba(217, 221, 224, 0.3) 70%,
-      rgba(217, 221, 224, 0.58) 88%,
-      rgba(217, 221, 224, 0.9) 100%);
+      color-mix(in srgb, var(--bg) 66%, transparent) 0%,
+      color-mix(in srgb, var(--bg) 30%, transparent) 40%,
+      color-mix(in srgb, var(--bg) 34%, transparent) 70%,
+      color-mix(in srgb, var(--bg) 64%, transparent) 88%,
+      color-mix(in srgb, var(--bg) 94%, transparent) 100%);
 }
 
 /* ── workspace status strip ─────────────────────────────────────────────
@@ -1605,11 +1624,179 @@ button.cal-chip {
 }
 .skip-link {
   position: absolute; left: 12px; top: -60px; z-index: 300;
-  padding: 8px 14px; background: var(--accent); color: #0E1012;
+  padding: 8px 14px; background: var(--accent); color: var(--on-accent);
   font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase;
   transition: top 140ms linear;
 }
 .skip-link:focus { top: 10px; }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   ARCHIVE LAYER REFINEMENT (1.3.10)
+
+   The palette alone does not create hierarchy: these rules give each layer
+   its own edge and elevation on the pearl ground — panels sit above the
+   workspace, nested bands recede into a cool steel tint, controls read as
+   machined inserts, and the graphite HUD keeps its own dark interaction
+   states. Everything here is scoped to [data-theme="archive"], so TERMINAL
+   is untouched.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* information panels: bright face, cool structural edge, a light lip along
+   the top and a low grounded shadow — a machined plate, not a web card */
+html[data-theme="archive"] .panel {
+  border-color: var(--border-soft);
+  border-top-color: #FFFFFF;
+  box-shadow: var(--shadow-sm);
+}
+html[data-theme="archive"] .panel-head {
+  background: var(--surface-2);
+  border-bottom-color: var(--border-soft);
+}
+/* white information plates get a hairline so they lift off the panel */
+html[data-theme="archive"] .plate,
+html[data-theme="archive"] .panel.white { border-color: var(--border-soft); }
+html[data-theme="archive"] .panel.ink,
+html[data-theme="archive"] .panel.raised,
+html[data-theme="archive"] .panel-2 {
+  background: var(--surface-2);
+  border-color: var(--border-soft);
+}
+
+/* tables: a steel header band and a cool tint on hover */
+html[data-theme="archive"] .tbl th {
+  background: var(--surface-2);
+  border-bottom-color: var(--border);
+  color: var(--text-2);
+}
+html[data-theme="archive"] .tbl td { border-bottom-color: var(--border-soft); }
+html[data-theme="archive"] .tbl tbody tr:hover,
+html[data-theme="archive"] .row-click:hover,
+html[data-theme="archive"] .strip-btn:hover { background: color-mix(in srgb, var(--accent) 7%, var(--surface)); }
+
+/* controls: recessed pearl inserts with a steel edge */
+html[data-theme="archive"] .input,
+html[data-theme="archive"] .select,
+html[data-theme="archive"] .textarea {
+  background: var(--field-bg);
+  box-shadow: inset 0 1px 2px rgba(26, 39, 48, 0.07);
+}
+html[data-theme="archive"] .input:focus,
+html[data-theme="archive"] .select:focus,
+html[data-theme="archive"] .textarea:focus {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px var(--accent-dim);
+}
+html[data-theme="archive"] .input::placeholder,
+html[data-theme="archive"] .textarea::placeholder { color: var(--text-3); }
+
+/* segmented filters, tabs and secondary buttons */
+html[data-theme="archive"] .seg { background: var(--surface-2); border-color: var(--border); }
+html[data-theme="archive"] .seg button { color: var(--text-2); }
+html[data-theme="archive"] .seg button:hover { background: var(--surface-3); color: var(--text); }
+/* secondary buttons are steel chips; the primary keeps the accent fill with
+   a white label (see the --on-accent token) */
+html[data-theme="archive"] .btn:not(.btn-primary):not(.btn-outline):not(.btn-danger):not(.btn-ghost):not(:disabled):not([aria-disabled="true"]) {
+  background: var(--surface-2);
+  border-color: var(--border);
+  color: var(--text-2);
+}
+html[data-theme="archive"] .btn:not(.btn-primary):not(.btn-outline):not(.btn-danger):not(.btn-ghost):not(:disabled):not([aria-disabled="true"]):hover {
+  background: var(--surface-3);
+  border-color: var(--text-3);
+  color: var(--text);
+}
+html[data-theme="archive"] .btn-primary,
+html[data-theme="archive"] .btn-primary:hover { color: var(--on-accent); }
+/* a disabled control is an inert insert: the faded accent fill would leave a
+   near-invisible white label on the pearl ground */
+html[data-theme="archive"] .btn:disabled,
+html[data-theme="archive"] .btn[aria-disabled="true"] {
+  opacity: 1;
+  background: var(--surface-3);
+  border-color: var(--border-soft);
+  color: var(--text-3);
+  box-shadow: none;
+}
+html[data-theme="archive"] .btn:disabled:hover,
+html[data-theme="archive"] .btn[aria-disabled="true"]:hover {
+  background: var(--surface-3);
+  border-color: var(--border-soft);
+  color: var(--text-3);
+}
+html[data-theme="archive"] .btn-ghost { background: transparent; border-color: transparent; }
+html[data-theme="archive"] .btn-ghost:hover { background: var(--surface-2); }
+html[data-theme="archive"] .btn-outline { background: transparent; }
+html[data-theme="archive"] .btn-danger { background: transparent; color: var(--crit); }
+html[data-theme="archive"] .btn-danger:hover { background: var(--crit); color: #FFFFFF; }
+html[data-theme="archive"] .tab:hover { background: var(--surface-2); }
+html[data-theme="archive"] .tab.on { background: var(--accent-dim); }
+
+/* status chips keep their semantic tint; the neutral chip gets a readable
+   graphite label on the pearl ground */
+html[data-theme="archive"] .badge-gray { color: var(--text-2); background: var(--surface-2); }
+html[data-theme="archive"] .badge-solid { border-color: transparent; }
+
+/* accent type on the pearl ground steps one tone deeper than the fill accent,
+   and the eyebrow chip is mixed from the ground so it stays legible over the
+   page artwork as well as over plain pearl */
+html[data-theme="archive"] .masthead-eyebrow {
+  color: var(--accent-hover);
+  background: color-mix(in srgb, var(--accent) 13%, var(--bg));
+  border-left-color: var(--accent-hover);
+}
+html[data-theme="archive"] .badge-cyan { color: var(--accent-hover); }
+/* form labels are structural, so they take the second text tone here */
+html[data-theme="archive"] .field-label { color: var(--text-2); }
+/* the masthead meta line sits over the page artwork, so it takes the second
+   tone to keep AA at every breakpoint */
+html[data-theme="archive"] .masthead-meta { color: var(--text-2); }
+html[data-theme="archive"] .mono-label-bright { color: var(--accent-hover); }
+html[data-theme="archive"] .tab.on { color: var(--accent-hover); }
+
+/* modal: a cool graphite veil, not a flat grey wash */
+html[data-theme="archive"] .modal-backdrop { background: rgba(23, 36, 45, 0.34); }
+html[data-theme="archive"] .modal-panel {
+  background: var(--surface);
+  border-color: var(--border-soft);
+  box-shadow: 0 30px 74px rgba(23, 36, 45, 0.3), 0 2px 6px rgba(23, 36, 45, 0.12);
+}
+html[data-theme="archive"] .modal-head,
+html[data-theme="archive"] .modal-foot { background: var(--surface-2); border-color: var(--border-soft); }
+
+/* navigation modules keep their bright face and gain the plate shadow */
+html[data-theme="archive"] .nav-tile { box-shadow: var(--shadow-sm); }
+html[data-theme="archive"] .nav-tile:hover { box-shadow: var(--shadow); }
+
+/* identity + readout furniture */
+html[data-theme="archive"] .readout {
+  background: var(--surface);
+  border-color: var(--border);
+  box-shadow: var(--shadow-sm);
+}
+html[data-theme="archive"] .identity-scrim {
+  background: radial-gradient(76% 58% at 50% 44%,
+    color-mix(in srgb, var(--bg) 70%, transparent) 0%,
+    color-mix(in srgb, var(--bg) 38%, transparent) 62%,
+    transparent 100%);
+}
+html[data-theme="archive"] .identity-sub { color: var(--accent-hover); }
+
+/* the HUD stays graphite: hover wash, save marker and hairlines follow it,
+   and status marks switch to their on-dark values so they stay legible */
+html[data-theme="archive"] .hud { box-shadow: 0 10px 30px rgba(23, 36, 45, 0.3); }
+html[data-theme="archive"] .hud .save-ind.idle { color: var(--hud-dim); }
+html[data-theme="archive"] .hud .save-ind.idle .sq { background: var(--hud-dim); }
+html[data-theme="archive"] .hud .save-ind.saved { color: #63CE9E; }
+html[data-theme="archive"] .hud .save-ind.saved .sq { background: #63CE9E; }
+html[data-theme="archive"] .hud .save-ind.saving { color: #EDA06A; }
+html[data-theme="archive"] .hud .save-ind.saving .sq { background: #EDA06A; }
+html[data-theme="archive"] .hud .save-ind.error { color: #EF8B87; }
+html[data-theme="archive"] .hud .save-ind.error .sq { background: #EF8B87; }
+html[data-theme="archive"] .hud .save-ind .sq { box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06); }
+html[data-theme="archive"] .hud-alert-dot { background: #E5B62C; }
+
+/* scrollbars take the workspace ground, not the panel face */
+html[data-theme="archive"] *::-webkit-scrollbar-thumb { border-color: var(--bg); }
 
 /* ── Responsive: smaller desktop windows ────────────────────────── */
 @media (max-width: 1400px) {
