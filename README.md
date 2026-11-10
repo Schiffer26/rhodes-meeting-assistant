@@ -431,10 +431,13 @@ interfaces in `types/index.ts` (`meetings`, `agenda_items`, `personnel`,
 | `Ctrl + N` | Register a new meeting |
 | `Ctrl + K` | Global local search |
 | `Ctrl + S` | Force-save current information to local storage |
-| `Ctrl + Shift + N` | Quick note into a meeting record |
+| `Alt + Shift + N` | Quick note into a meeting record |
 | `Esc` | Close the active modal |
 
-Shortcuts avoid hijacking typing contexts except where conventional.
+Shortcuts avoid hijacking typing contexts except where conventional. Quick Note is
+also a labelled button in the top navigation, beside Notifications and Keyboard
+Controls: the previous chord (`Ctrl + Shift + N`) is a browser window command and
+never reached the page, so it is no longer bound or advertised.
 
 ## 11 · Honest limitations of this prototype
 

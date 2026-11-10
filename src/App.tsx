@@ -267,7 +267,7 @@ export function QuickNoteModal({ open, onClose }: { open: boolean; onClose: () =
   }, [open, data.meetings]);
 
   return (
-    <Modal open={open} onClose={onClose} title="Quick Note" code="CTRL+SHIFT+N" width={520}
+    <Modal open={open} onClose={onClose} title="Quick Note" code="ALT+SHIFT+N" width={520}
       footer={<>
         <Button onClick={onClose}>Cancel</Button>
         <Button variant="primary" icon={<StickyNote size={14} />} onClick={() => {

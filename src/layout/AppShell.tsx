@@ -8,7 +8,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   LayoutDashboard, CalendarRange, Users, ListTodo, Archive, Settings, Search,
-  Sun, Moon, Monitor, Bell, Command, Clock3, Keyboard,
+  Sun, Moon, Monitor, Bell, Command, Clock3, Keyboard, StickyNote,
 } from "lucide-react";
 import { RhodesLogo } from "@/components/RhodesLogo";
 import { useAppData, useDerived, useMotionScale } from "@/hooks/store";
@@ -221,7 +221,7 @@ function GlobalSearch({ open, onClose, navigate }: { open: boolean; onClose: () 
 const SHORTCUTS: { keys: string; action: string }[] = [
   { keys: "CTRL + K", action: "Open global search" },
   { keys: "CTRL + N", action: "Register a new meeting" },
-  { keys: "CTRL + SHIFT + N", action: "Capture a quick note" },
+  { keys: "ALT + SHIFT + N", action: "Capture a quick note" },
   { keys: "CTRL + S", action: "Force save to local storage" },
   { keys: "ESC", action: "Dismiss the active dialog" },
 ];
@@ -257,10 +257,19 @@ export function AppShell({ route, navigate, children, onQuickNote }: {
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
-      const typing = ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable;
+      // `isContentEditable` is the reliable signal in a browser, but it is not
+      // implemented everywhere (jsdom returns undefined), so the attribute is
+      // checked as well — including on descendants of the editor.
+      const editable = target.closest?.('[contenteditable]:not([contenteditable="false"])');
+      const typing = ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) ||
+        target.isContentEditable === true || !!editable;
       if (e.ctrlKey && e.key.toLowerCase() === "k") { e.preventDefault(); setSearchOpen(true); }
       if (e.ctrlKey && !typing && e.key.toLowerCase() === "n" && !e.shiftKey) { e.preventDefault(); navigate({ section: "meetings" }); window.dispatchEvent(new CustomEvent("rhodes:new-meeting")); }
-      if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "n") { e.preventDefault(); onQuickNote(); }
+      // Quick Note. Alt+Shift+N rather than Ctrl+Shift+N: the latter is a browser
+      // window command (new incognito window) and never reaches the page. Not
+      // handled while the operator is typing, so the browser keeps its behaviour
+      // inside fields.
+      if (e.altKey && e.shiftKey && !typing && e.key.toLowerCase() === "n") { e.preventDefault(); onQuickNote(); }
       if (e.ctrlKey && e.key.toLowerCase() === "s") { e.preventDefault(); window.dispatchEvent(new CustomEvent("rhodes:flush")); }
     };
     window.addEventListener("keydown", h);
@@ -320,6 +329,11 @@ export function AppShell({ route, navigate, children, onQuickNote }: {
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <span style={{ color: "var(--hud-dim)" }}><SaveIndicator state={saveState} /></span>
             <Notifications navigate={navigate} />
+            <button className="hud-btn hud-quick" onClick={onQuickNote}
+              title="Quick Note" aria-label="Quick Note" aria-keyshortcuts="Alt+Shift+N">
+              <StickyNote size={15} />
+              <span className="hud-quick-label mono" aria-hidden="true">QUICK NOTE</span>
+            </button>
             <button className="hud-btn hud-kbd-opt" style={{ width: 34, height: 34 }} onClick={() => setKeysOpen(true)}
               title="Keyboard controls" aria-label="Keyboard controls"><Keyboard size={16} /></button>
           </div>

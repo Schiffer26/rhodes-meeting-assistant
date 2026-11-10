@@ -673,6 +673,12 @@ html[data-theme="archive"] .input:focus, html[data-theme="archive"] .select:focu
   font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.1em;
   border: 1px solid var(--hud-line); padding: 2px 5px; color: var(--hud-dim);
 }
+/* Quick Note: the one HUD action the operator reaches for mid-meeting, so it
+   carries a visible caption instead of being icon-only. The caption collapses
+   first — the button itself stays reachable at every width. */
+.hud-quick { width: auto; padding: 0 10px; gap: 7px; }
+.hud-quick .hud-quick-label { font-size: 9px; letter-spacing: 0.14em; color: inherit; }
+.hud-quick:hover .hud-quick-label { color: var(--accent); }
 
 /* ═══════════════════════════════════════════════════════════════════════
    PAGE BACKDROPS — Meeting Operations / Personnel Registry
@@ -1807,6 +1813,12 @@ html[data-theme="archive"] *::-webkit-scrollbar-thumb { border-color: var(--bg);
   .rail-count { display: none; }
   .nav-tile.sm { padding: 12px; }
   .nav-tile.md { padding: 15px; }
+}
+
+@media (max-width: 1320px) {
+  /* keep the HUD one line: the caption goes, the button stays */
+  .hud-quick { width: 34px; padding: 0; }
+  .hud-quick .hud-quick-label { display: none; }
 }
 
 @media (max-width: 1220px) {
