@@ -49,11 +49,12 @@ export interface Store {
    */
   saveNote: (meetingId: ID, content: string) => boolean;
   // decisions
-  createDecision: (input: { meetingId: ID; title: string; description: string; agendaItemId: ID | null; approvedBy: ID | null; decisionDate: string; status: Decision["status"] }) => void;
+  /** `false` means the store refused the write (recovery lock) — say so, and keep the draft. */
+  createDecision: (input: { meetingId: ID; title: string; description: string; agendaItemId: ID | null; approvedBy: ID | null; decisionDate: string; status: Decision["status"] }) => boolean;
   updateDecision: (id: ID, patch: Partial<Decision>) => void;
   deleteDecision: (id: ID) => Promise<DestructiveResult>;
   // action items
-  createActionItem: (input: { meetingId: ID; title: string; description: string; agendaItemId: ID | null; assigneeId: ID | null; dueDate: string; priority: Priority; status: TaskStatus }) => void;
+  createActionItem: (input: { meetingId: ID; title: string; description: string; agendaItemId: ID | null; assigneeId: ID | null; dueDate: string; priority: Priority; status: TaskStatus }) => boolean;
   updateActionItem: (id: ID, patch: Partial<ActionItem>) => void;
   deleteActionItem: (id: ID) => Promise<DestructiveResult>;
   setActionStatus: (id: ID, status: TaskStatus) => void;
@@ -128,6 +129,8 @@ export interface ImportResult {
   error?: string;
   snapshotKey?: string;
   counts?: Record<string, number>;
+  /** Drafts captured during the import that belonged to replaced records. */
+  dropped?: number;
 }
 
 /**
@@ -142,6 +145,12 @@ export interface DestructiveResult {
   ok: boolean;
   error?: string;
   snapshotKey?: string;
+  /**
+   * Drafts that arrived while the operation ran and were discarded because the
+   * record they belonged to no longer exists. Reported so the interface can say
+   * what happened instead of implying everything was kept.
+   */
+  dropped?: number;
 }
 
 const Ctx = createContext<Store | null>(null);
@@ -341,6 +350,23 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
   }, [enqueueWrite, source]);
 
   /**
+   * Drop the queued write, reporting whether anything was actually waiting.
+   *
+   * Callers must only use this once the queued document has been accounted for
+   * — written down, or preserved — because the timer is the only thing that
+   * would have carried those bytes to storage.
+   */
+  const cancelPendingWrite = useCallback((): boolean => {
+    const hadPending = persistTimer.current !== null || pendingDoc.current !== null;
+    if (persistTimer.current) {
+      window.clearTimeout(persistTimer.current);
+      persistTimer.current = null;
+    }
+    pendingDoc.current = null;
+    return hadPending;
+  }, []);
+
+  /**
    * Hold a document for the debounce window, then write it.
    *
    * The document is kept in `pendingDoc` until the timer fires, so a refusal can
@@ -385,31 +411,59 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
 
   /**
    * Release the document and replay any edit that arrived while it was held.
+   *
    * The replay is persisted through the same chain, so it can never overtake the
-   * operation's own write.
+   * operation's own write. A child record the replay *adds* for a meeting that no
+   * longer exists is discarded rather than stored as an orphan; the count is
+   * returned so the caller can say so instead of implying everything was kept.
    */
-  const endExclusive = useCallback(() => {
+  const endExclusive = useCallback((): number => {
     exclusiveRef.current = null;
     const deferred = deferredMutations.current;
     deferredMutations.current = [];
-    if (!deferred.length) return;
+    if (!deferred.length) return 0;
 
     const base = dataRef.current;
-    if (!base) return;
+    if (!base) return 0;
     let next = base;
     for (const transform of deferred) next = transform(next);
 
-    // A note typed while its meeting was being deleted must not reappear as an
-    // orphan record: notes belong to their meeting.
     const meetingIds = new Set(next.meetings.map((m) => m.id));
-    if (next.notes.some((n) => !meetingIds.has(n.meetingId))) {
-      next = { ...next, notes: next.notes.filter((n) => meetingIds.has(n.meetingId)) };
+    let dropped = 0;
+
+    // Only records the replay itself added are candidates: an existing record can
+    // never gain a second meeting, and pre-existing data (including a payload
+    // that arrived by import) is left exactly as it was.
+    const keepChild = <T extends { id: string; meetingId: string }>(before: T[], after: T[]): T[] => {
+      const known = new Set(before.map((item) => item.id));
+      return after.filter((item) => {
+        if (meetingIds.has(item.meetingId) || known.has(item.id)) return true;
+        dropped += 1;
+        return false;
+      });
+    };
+
+    const agendaItems = keepChild(base.agendaItems, next.agendaItems);
+    const decisions = keepChild(base.decisions, next.decisions);
+    const actionItems = keepChild(base.actionItems, next.actionItems);
+    // Notes are keyed by meeting rather than listed under it: a note is kept only
+    // while its meeting exists, whether it was typed now or earlier — there is no
+    // interface that could show a note without its record.
+    const notes = next.notes.filter((note) => {
+      if (meetingIds.has(note.meetingId)) return true;
+      dropped += 1;
+      return false;
+    });
+
+    if (dropped > 0) {
+      next = { ...next, agendaItems, decisions, actionItems, notes };
     }
 
-    if (next === base) return;
+    if (next === base) return dropped;
     dataRef.current = next;
     setData(next);
     persist(next);
+    return dropped;
   }, [persist]);
 
   /**
@@ -489,6 +543,8 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
    */
   const preserveBeforeDestructive = useCallback(async (
     reason: string,
+    /** Label to use when the live key is absent and only memory can be preserved. */
+    memoryReason?: string,
   ): Promise<{ ok: true; snapshotKey: string; raw: string } | { ok: false; error: string }> => {
     const current = dataRef.current;
     if (!current) {
@@ -516,7 +572,7 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
       return {
         ok: false,
         error:
-          `The stored records could not be read (${first.error}), so nothing was removed and no recovery copy was taken. ` +
+          `The stored records could not be read (${first.error}), so the operation was cancelled and no recovery copy was taken. ` +
           "Your pending changes are still queued and will be saved when storage can be read again.",
       };
     }
@@ -530,14 +586,29 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     if (!stored.ok) {
       return {
         ok: false,
-        error: `The stored records could not be read back (${stored.error}), so nothing was removed and no recovery copy was taken.`,
+        error: `The stored records could not be read back (${stored.error}), so the operation was cancelled and no recovery copy was taken.`,
       };
     }
 
+    // Is a debounce still holding a document that has not reached storage? Only
+    // then is memory genuinely ahead of the stored bytes; otherwise any
+    // difference is display normalisation (a migrated payload, a repaired value)
+    // and the stored bytes are the record of truth that must be copied verbatim.
+    const queuedDoc = pendingDoc.current;
+
     let payload: string;
-    if (stored.raw === null || stored.raw !== memoryRaw) {
-      // Storage has not caught up with what the operator is looking at. Write the
-      // in-memory document now; the copy below is then exactly that document.
+    let label = reason;
+    if (stored.raw === null && memoryReason) {
+      // Nothing is stored at all, so the records in memory are the only copy of
+      // what is about to be replaced. Preserve them exactly; there are no stored
+      // bytes to bring up to date. Any queued write is left alone here — the
+      // caller accounts for it immediately before it replaces the document.
+      payload = JSON.stringify(current, null, 2);
+      label = memoryReason;
+    } else if (stored.raw === null || (queuedDoc !== null && stored.raw !== memoryRaw)) {
+      // A queued document has not been written yet. Write it now; the copy below
+      // is then exactly what the operator is looking at, so their pending edit is
+      // inside the recovery copy and never only in memory.
       if (persistTimer.current) {
         window.clearTimeout(persistTimer.current);
         persistTimer.current = null;
@@ -560,9 +631,9 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
       const after = source.readRaw();
       payload = after.ok ? after.raw ?? memoryRaw : memoryRaw;
     } else {
-      // Storage already matches memory, so a queued timer would only write the
-      // same bytes. Clearing it loses nothing — but the indicator must stop
-      // saying "saving", because nothing is pending any more.
+      // Nothing is waiting to be written, so the copy is the stored document
+      // byte for byte. Clearing a timer here loses nothing (it would write the
+      // same bytes) — but the indicator must stop saying "saving".
       if (persistTimer.current) {
         window.clearTimeout(persistTimer.current);
         persistTimer.current = null;
@@ -572,11 +643,11 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
       payload = stored.raw;
     }
 
-    const saved = source.snapshot(payload, reason);
+    const saved = source.snapshot(payload, label);
     if ("error" in saved) {
       return {
         ok: false,
-        error: `Could not create a recovery copy (${saved.error}), so nothing was removed and the current records were left unchanged.`,
+        error: `Could not create a recovery snapshot (${saved.error}), so no recovery copy exists. The operation was cancelled and nothing was changed.`,
       };
     }
 
@@ -632,8 +703,11 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
 
       dataRef.current = next;
       setData(next);
-      return { ok: true, snapshotKey: preserved.snapshotKey };
+      // Replay now, so the caller can report any draft whose record was removed.
+      const dropped = endExclusive();
+      return { ok: true, snapshotKey: preserved.snapshotKey, dropped };
     } finally {
+      // Idempotent: only the edits still held are replayed.
       endExclusive();
     }
   }, [beginExclusive, endExclusive, preserveBeforeDestructive, writeDocument]);
@@ -780,7 +854,8 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
 
   // ── Decisions ───────────────────────────────────────────────
   const createDecision = useCallback<Store["createDecision"]>((input) => {
-    mutate((d) => ({ ...d, decisions: [...d.decisions, { ...input, id: uid("d") }] }));
+    const result = mutate((d) => ({ ...d, decisions: [...d.decisions, { ...input, id: uid("d") }] }));
+    return result.ok === true;
   }, [mutate]);
   const updateDecision = useCallback((id: ID, patch: Partial<Decision>) => {
     mutate((d) => ({ ...d, decisions: d.decisions.map((x) => (x.id === id ? { ...x, ...patch } : x)) }));
@@ -794,7 +869,8 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
   // ── Action items ────────────────────────────────────────────
   const createActionItem = useCallback<Store["createActionItem"]>((input) => {
     const nowIso = new Date().toISOString();
-    mutate((d) => ({ ...d, actionItems: [...d.actionItems, { ...input, id: uid("t"), createdAt: nowIso, updatedAt: nowIso }] }));
+    const result = mutate((d) => ({ ...d, actionItems: [...d.actionItems, { ...input, id: uid("t"), createdAt: nowIso, updatedAt: nowIso }] }));
+    return result.ok === true;
   }, [mutate]);
   const updateActionItem = useCallback((id: ID, patch: Partial<ActionItem>) => {
     mutate((d) => ({ ...d, actionItems: d.actionItems.map((t) => (t.id === id ? { ...t, ...patch, updatedAt: new Date().toISOString() } : t)) }));
@@ -931,84 +1007,46 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     const opened = beginExclusive("import");
     if (!opened.ok) return { ok: false, error: opened.error + " No records were changed." };
     try {
-      // 1 · a recovery snapshot is mandatory before anything is replaced
-      if (!source.snapshot || !source.readRaw) {
-        return {
-          ok: false,
-          error: "This storage adapter cannot create a recovery snapshot, so the import was cancelled and the current records were left unchanged.",
-        };
-      }
+      // 1 · Preserve through the *same* path deletes use. It reads storage first,
+      //     drains writes already running, writes any queued document down, and
+      //     only then copies — so the copy contains the pending edits the
+      //     operator can see, and a failed read leaves the queued write armed.
+      //     An absent key preserves the in-memory records under its own label.
+      const preserved = await preserveBeforeDestructive("pre-import", "pre-import-memory");
+      if (!preserved.ok) return { ok: false, error: preserved.error };
 
-      // 1a · let any write that is already running land first, so the copy
-      //      describes the document storage actually holds.
-      await drainWrites();
+      // 2 · The queued write has been accounted for (it was written down before
+      //     the copy, or preserved with it), so it can be dropped now: a timer
+      //     firing after the replacement would put the old document back.
+      const hadPending = cancelPendingWrite();
 
-      // 1b · distinguish "nothing stored" from "storage could not be read".
-      // A failed read must cancel the import: the records it failed to read are
-      // exactly the ones the snapshot exists to protect.
-      const read = source.readRaw();
-      if (!read.ok) {
-        return {
-          ok: false,
-          error: `The stored records could not be read (${read.error}), so the import was cancelled and nothing was changed.`,
-        };
-      }
-
-      let snapshotKey: string | undefined;
-      if (read.raw !== null) {
-        // 1c · the live payload exists — preserve its exact bytes.
-        const saved = source.snapshot(read.raw, "pre-import");
-        if ("error" in saved) {
-          return {
-            ok: false,
-            error: `Could not create a recovery snapshot (${saved.error}). The import was cancelled and the current records were left unchanged.`,
-          };
-        }
-        snapshotKey = saved.key;
-      } else {
-        // 1d · the key is genuinely absent. In-memory records may still be the only
-        // copy of what the operator is about to replace, so preserve them too.
-        const memory = dataRef.current;
-        if (!memory) {
-          return {
-            ok: false,
-            error: "No records are loaded, so there is nothing to preserve and the import was cancelled.",
-          };
-        }
-        const saved = source.snapshot(JSON.stringify(memory, null, 2), "pre-import-memory");
-        if ("error" in saved) {
-          return {
-            ok: false,
-            error: `Could not preserve the records held in memory (${saved.error}). The import was cancelled and nothing was changed.`,
-          };
-        }
-        snapshotKey = saved.key;
-      }
-
-      // 2 · persist first; a pending debounce must not race the import
-      if (persistTimer.current) {
-        window.clearTimeout(persistTimer.current);
-        persistTimer.current = null;
-      }
-      pendingDoc.current = null;
       setSaveState("saving");
       try {
         await writeDocument(result.data);
       } catch (error) {
+        // Nothing was replaced. Put the queued document back on the queue so a
+        // reload cannot lose the edits the operator made before importing.
+        const live = dataRef.current;
+        if (hadPending && live) scheduleWrite(live);
         return {
           ok: false,
-          error: `The imported records could not be written to storage (${failureText(error)}). The existing records were left unchanged.`,
+          error:
+            `The imported records could not be written to storage (${failureText(error)}). The existing records were left unchanged.` +
+            (hadPending ? " Your pending changes are still queued and will be saved when storage accepts them." : ""),
         };
       }
 
       // 3 · commit
       dataRef.current = result.data;
       setData(result.data);
-      return { ok: true, snapshotKey, counts: result.counts };
+      // Replay now, so the caller can report any draft that has no record left.
+      const dropped = endExclusive();
+      return { ok: true, snapshotKey: preserved.snapshotKey, counts: result.counts, dropped };
     } finally {
+      // Idempotent: only the edits still held are replayed.
       endExclusive();
     }
-  }, [source, beginExclusive, endExclusive, drainWrites, writeDocument]);
+  }, [beginExclusive, endExclusive, preserveBeforeDestructive, cancelPendingWrite, writeDocument, scheduleWrite]);
 
   /**
    * A browser download is only an *initiation*: the page cannot verify that the
@@ -1125,8 +1163,11 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
       // Only now is the reset real.
       dataRef.current = next;
       setData(next);
-      return { ok: true, snapshotKey: preserved.snapshotKey };
+      // Replay now, so the caller can report any draft whose record was removed.
+      const dropped = endExclusive();
+      return { ok: true, snapshotKey: preserved.snapshotKey, dropped };
     } finally {
+      // Idempotent: only the edits still held are replayed.
       endExclusive();
     }
   }, [beginExclusive, endExclusive, preserveBeforeDestructive, writeDocument]);

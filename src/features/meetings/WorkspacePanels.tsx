@@ -230,17 +230,27 @@ export function NotesPanel({ meeting }: { meeting: Meeting }) {
   const timer = useRef<number | null>(null);
   const pending = useRef<string | null>(null);
   const [dirty, setDirty] = useState(false);
+  // A refusal is not the same as "still typing": the indicator must never read
+  // "Saved" while the store is holding the draft back.
+  const [refused, setRefused] = useState(false);
   const [words, setWords] = useState(0);
 
   useEffect(() => {
     // A draft kept from an earlier refusal is shown (and retried) first.
     const draft = unsavedDrafts.get(meeting.id);
+    let keptDraft = false;
     if (draft != null) {
+      // The stored copy is the fallback until the store takes the draft: a second
+      // refusal must keep the draft and leave the editor visibly unsaved.
       if (saveNote(meeting.id, draft)) unsavedDrafts.delete(meeting.id);
+      else keptDraft = true;
     }
     const html = draft ?? note?.content ?? "";
     if (ref.current) ref.current.innerHTML = html;
-    setDirty(false);
+    // Restored-but-unsaved content is never marked saved.
+    setDirty(keptDraft);
+    setRefused(keptDraft);
+    pending.current = keptDraft ? html : null;
     setWords(countWords(html));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [meeting.id]);
@@ -251,9 +261,10 @@ export function NotesPanel({ meeting }: { meeting: Meeting }) {
     // Only clear the draft once the store has taken it. A refusal (write lock)
     // keeps `pending` and the dirty flag, so the content is still here to retry
     // instead of disappearing with the panel.
-    if (!saveNote(meeting.id, html)) return;
+    if (!saveNote(meeting.id, html)) { setRefused(true); return; }
     pending.current = null;
     setDirty(false);
+    setRefused(false);
   }, [meeting.id, saveNote]);
 
   const scheduleSave = useCallback(() => {
@@ -300,7 +311,7 @@ export function NotesPanel({ meeting }: { meeting: Meeting }) {
     <button className="editor-tool" title={label} aria-label={label} onMouseDown={(e) => e.preventDefault()} onClick={fn}>{icon}</button>
   );
 
-  const state = dirty || saveState === "saving" ? "saving" : saveState === "error" ? "error" : "saved";
+  const state = refused ? "error" : dirty || saveState === "saving" ? "saving" : saveState === "error" ? "error" : "saved";
 
   return (
     <Panel title="Discussion Notes" code="MANUAL CAPTURE · AUTOSAVE" pad={false}
@@ -650,18 +661,25 @@ export function QuickCaptureRail({ meeting }: { meeting: Meeting }) {
   const submit = () => {
     const v = text.trim();
     if (!v) return;
+    let accepted: boolean;
     if (kind === "note") {
       const note = data.notes.find((n) => n.meetingId === meeting.id);
       const d = new Date();
       const ts = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-      saveNote(meeting.id, `${note?.content ?? ""}<p><span class="ts">[${ts}]</span> ${v.replace(/</g, "&lt;")}</p>`);
-      toast.success("Note appended to discussion log.");
+      accepted = saveNote(meeting.id, `${note?.content ?? ""}<p><span class="ts">[${ts}]</span> ${v.replace(/</g, "&lt;")}</p>`);
+      if (accepted) toast.success("Note appended to discussion log.");
     } else if (kind === "decision") {
-      createDecision({ meetingId: meeting.id, title: v, description: "", agendaItemId: null, approvedBy: null, decisionDate: todayISO(), status: "proposed" });
-      toast.success("Decision captured as PROPOSED.");
+      accepted = createDecision({ meetingId: meeting.id, title: v, description: "", agendaItemId: null, approvedBy: null, decisionDate: todayISO(), status: "proposed" });
+      if (accepted) toast.success("Decision captured as PROPOSED.");
     } else {
-      createActionItem({ meetingId: meeting.id, title: v, description: "", agendaItemId: null, assigneeId: null, dueDate: todayISO(), priority: "medium", status: "pending" });
-      toast.success("Action item captured — refine assignee and deadline.");
+      accepted = createActionItem({ meetingId: meeting.id, title: v, description: "", agendaItemId: null, assigneeId: null, dueDate: todayISO(), priority: "medium", status: "pending" });
+      if (accepted) toast.success("Action item captured — refine assignee and deadline.");
+    }
+    if (!accepted) {
+      // Refused by the recovery write lock: keep the text so it can be retried
+      // instead of clearing the box and losing it.
+      toast.error("Not saved — the records are locked while a recovery copy is taken. Your text is still here; log it again in a moment.");
+      return;
     }
     setText("");
     inputRef.current?.focus();

@@ -249,7 +249,9 @@ function BootSequence({ done }: { done: () => void }) {
 }
 
 // ── Quick note modal (Ctrl+Shift+N) ───────────────────────────
-function QuickNoteModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+// Exported so the persistence behaviour of this writer can be driven in
+// isolation by the regression harness; the shell mounts it exactly as before.
+export function QuickNoteModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { data, saveNote } = useAppData();
   const toast = useToast();
   const [meetingId, setMeetingId] = useState("");
@@ -274,7 +276,13 @@ function QuickNoteModal({ open, onClose }: { open: boolean; onClose: () => void 
           const note = data.notes.find((n) => n.meetingId === meetingId);
           const d = new Date();
           const ts = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-          saveNote(meetingId, `${note?.content ?? ""}<p><span class="ts">[${ts}]</span> ${text.trim().replace(/</g, "&lt;")}</p>`);
+          const html = `${note?.content ?? ""}<p><span class="ts">[${ts}]</span> ${text.trim().replace(/</g, "&lt;")}</p>`;
+          // A refusal (recovery write lock) must not close the modal or clear the
+          // text: the operator's note is still here to retry.
+          if (!saveNote(meetingId, html)) {
+            toast.error("Not saved — the records are locked while a recovery copy is taken. Your note is still here; append it again in a moment.");
+            return;
+          }
           toast.success("Quick note appended to the record.");
           onClose();
         }}>Append to Record</Button>

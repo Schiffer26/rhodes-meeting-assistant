@@ -208,7 +208,15 @@ export function MeetingOperations({ navigate }: { navigate: (r: Route) => void }
           setConfirmDel(null);
           if (!target) return;
           void deleteMeeting(target.id).then((res) => {
-            if (res.ok) toast.success("Meeting record deleted. A recovery copy was preserved.");
+            if (res.ok) {
+              // Drafts captured while the deletion ran cannot belong to a record
+              // that no longer exists: say so instead of implying all were kept.
+              const lost = res.dropped ?? 0;
+              toast.success(
+                "Meeting record deleted. A recovery copy was preserved." +
+                (lost ? ` ${lost} draft${lost === 1 ? "" : "s"} captured during the deletion belonged to this record and ${lost === 1 ? "was" : "were"} discarded.` : ""),
+              );
+            }
             else toast.error(res.error ?? "The meeting record could not be deleted.");
           });
         }} />

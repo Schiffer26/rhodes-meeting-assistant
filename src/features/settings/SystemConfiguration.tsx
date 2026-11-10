@@ -233,7 +233,11 @@ export function SystemConfiguration() {
           setImporting(false);
           setPending(null);
           if (res.ok) {
-            toast.success(`Backup imported from ${pending.name}.`);
+            const lost = res.dropped ?? 0;
+            toast.success(
+              `Backup imported from ${pending.name}.` +
+              (lost ? ` ${lost} draft${lost === 1 ? "" : "s"} captured during the import belonged to a replaced record and ${lost === 1 ? "was" : "were"} discarded.` : ""),
+            );
             refreshUsage();
           } else {
             toast.error(res.error ?? "Import failed. No records were changed.");

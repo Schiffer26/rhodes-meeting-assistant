@@ -307,13 +307,14 @@ write → commit.
 - **A failure changes nothing.** If the new document cannot be written, React
   state keeps the previous records, the operation reports the real storage error,
   and the recovery copy stays in storage. The result type
-  (`DestructiveResult`) carries `{ ok, error?, snapshotKey? }`, and every call
+  (`DestructiveResult`) carries `{ ok, error?, snapshotKey?, dropped? }`, and every call
   site awaits it, so a success toast only appears after the write landed.
-- **No stale write can undo it.** A pending debounced write is cancelled before
-  preservation, `opCount` is bumped so an in-flight save cannot report over the
-  new document, and record-removing operations are serialised: a second
-  confirmation while one is running is refused (`…still running`), as are
-  ordinary mutations (`mutate`) for the duration of the operation.
+- **No stale write can undo it.** A pending debounced write is accounted for by
+  preservation *before* its timer is cancelled (see Phase 1b below), `opCount` is
+  bumped so an in-flight save cannot report over the new document, and
+  record-removing operations are serialised: a second confirmation while one is
+  running is refused (`…still running`), as are ordinary mutations (`mutate`) for
+  the duration of the operation.
 - **The write lock still wins.** While a preserved copy has not been verified
   (unreadable store, failed snapshot), reset and every delete refuse with the
   existing write-lock message and touch nothing.
@@ -356,13 +357,45 @@ write → commit.
 > The newest copy is always kept — pruning happens after the write and keeps the
 > most recent four keys — but five record-removing operations in a row evict the
 > oldest copy, so an operator who wants to keep an older recovery point must
-> download it. Snapshot keys are timestamped to the millisecond; two operations
-> of the same type in the same millisecond share a key and the later copy wins
-> (the records are identical at that point, so nothing is lost).
+> download it. Keys are timestamped to the millisecond *and* carry the unique
+> suffix above, so two copies taken in the same millisecond never collide.
 >
-> A destructive operation holds the document for its duration, so a keystroke
-> that arrives in that window is ignored rather than queued. With the
-> localStorage adapter the window is a few milliseconds.
+> A destructive operation holds the document for its duration; a keystroke that
+> arrives in that window is queued and replayed when the operation finishes. With
+> the localStorage adapter the window is a few milliseconds.
+
+#### Import and deferred-edit safety (1.3.12 Phase 1b)
+
+- **An import preserves through the same path a delete uses.** `importJSON()`
+  validates, takes the exclusive lock, then calls `preserveBeforeDestructive`
+  (`pre-import`, or `pre-import-memory` when the live key is absent). The copy is
+  read back and compared exactly as it is for a delete; there is no second,
+  weaker verification path.
+- **A pending autosave is never silently discarded.** The copy includes the
+  latest records: a debounced document that has not reached storage is written
+  down first, and when nothing is waiting the stored bytes are copied verbatim
+  (a migrated or repaired in-memory view never overwrites them). The queued timer
+  is cancelled **only after** its document is accounted for, so an import cannot
+  snapshot stale bytes and then drop the newer ones. A failed read refuses the
+  import and leaves the timer armed; a failed preservation write refuses it and
+  re-arms the document for retry; a failed import write leaves the existing
+  records and the queued changes exactly as they were.
+- **Every Notes writer reports the truth.** `saveNote()` returns a boolean and
+  the Quick Note modal, Quick Capture and the notes editor only claim success on
+  `true`. On `false` they show an error and keep the text — the modal stays open,
+  the capture input is not cleared, and the editor keeps its draft and stays
+  visibly unsaved. `createDecision()` and `createActionItem()` report the same
+  way.
+- **Restored drafts stay unsaved.** A draft kept from a refused save is shown
+  again on remount and retried; if it is refused again it is kept, and the editor
+  reads *SAVE FAILED — RETRY* rather than *SAVED*.
+- **A deferred edit cannot orphan a record.** An edit queued while an operation
+  runs is replayed against the document that operation leaves behind. Any child
+  record the replay *adds* for a meeting that no longer exists — agenda item,
+  decision, action item, note — is discarded instead of stored, and the number
+  discarded is returned in `DestructiveResult.dropped` so the confirmation can
+  say so. Drafts for records that still exist are kept, and records that were
+  already stored are never filtered by this check.
 
 > The configuration screen labels this adapter accurately as provisional:
 > it is *not* the final SQLite database.
