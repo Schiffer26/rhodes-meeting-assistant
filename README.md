@@ -321,6 +321,37 @@ write → commit.
   document is computed from a synchronous mirror (`dataRef`) outside React's
   updater; a no-op transform writes nothing.
 
+#### Serialized writes and pending saves (1.3.12 Phase 1a)
+
+- **One write queue.** Every call the adapter receives for `save()` goes through
+  a single promise chain (`enqueueWrite`), so writes reach storage in the order
+  they were requested even when an adapter resolves slowly. A destructive write
+  therefore cannot be overtaken by a save that started earlier.
+  `opCount` is kept only for the save indicator — it reports, it does not order.
+- **One exclusive operation at a time.** Deletes, demo reset, import and
+  "start from demo" all take the same lock (`beginExclusive`/`endExclusive`), so
+  they cannot overlap each other or run under the recovery write lock.
+- **Edits are queued, not dropped.** An edit made while an exclusive operation
+  runs is applied to the document that operation leaves behind and written
+  through the same chain. The notes editor keeps its draft and its dirty state
+  unless `saveNote()` returns `true`, and drafts the store refused (write lock)
+  survive an unmount.
+- **A failed read costs nothing.** Preservation reads storage *before* touching
+  the pending autosave. If the read fails the operation is refused and the
+  debounced write stays armed, so queued edits still reach storage when it can be
+  read again. If the preservation write itself fails, the refusal says the changes
+  are still queued and the document is re-armed for retry; the indicator settles
+  on `error` instead of staying on `saving`.
+- **Timers are honest.** `persistTimer` is cleared when its callback actually
+  fires, so "a write is still waiting" and "the write has been sent" are
+  distinguishable by the store.
+
+> **Snapshot identity:** keys are
+> `rhodes.prototype.db.v1.snapshot.<stamp>.<reason>.<unique>`. The suffix is a
+> per-session counter plus a random tail, so two copies with the same reason and
+> the same millisecond never overwrite each other. `snapshots()` still parses the
+> reason from the key.
+
 > **Retention limitation:** the history stays at four copies (`MAX_SNAPSHOTS`).
 > The newest copy is always kept — pruning happens after the write and keeps the
 > most recent four keys — but five record-removing operations in a row evict the

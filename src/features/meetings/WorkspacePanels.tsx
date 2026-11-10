@@ -215,6 +215,13 @@ export function AgendaPanel({ meeting }: { meeting: Meeting }) {
 }
 
 // ═══ NOTES ══════════════════════════════════════════════════
+/**
+ * Drafts the store refused to take (recovery write lock) outlive the panel, so
+ * navigating away cannot silently discard what the operator typed. An entry is
+ * removed the moment a save is accepted.
+ */
+const unsavedDrafts = new Map<string, string>();
+
 export function NotesPanel({ meeting }: { meeting: Meeting }) {
   const { data, saveNote, saveState, flush } = useAppData();
   const toast = useToast();
@@ -226,16 +233,25 @@ export function NotesPanel({ meeting }: { meeting: Meeting }) {
   const [words, setWords] = useState(0);
 
   useEffect(() => {
-    if (ref.current) ref.current.innerHTML = note?.content ?? "";
+    // A draft kept from an earlier refusal is shown (and retried) first.
+    const draft = unsavedDrafts.get(meeting.id);
+    if (draft != null) {
+      if (saveNote(meeting.id, draft)) unsavedDrafts.delete(meeting.id);
+    }
+    const html = draft ?? note?.content ?? "";
+    if (ref.current) ref.current.innerHTML = html;
     setDirty(false);
-    setWords(countWords(note?.content ?? ""));
+    setWords(countWords(html));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [meeting.id]);
 
   const countWords = (html: string) => html.replace(/<[^>]+>/g, " ").trim().split(/\s+/).filter(Boolean).length;
 
   const doSave = useCallback((html: string) => {
-    saveNote(meeting.id, html);
+    // Only clear the draft once the store has taken it. A refusal (write lock)
+    // keeps `pending` and the dirty flag, so the content is still here to retry
+    // instead of disappearing with the panel.
+    if (!saveNote(meeting.id, html)) return;
     pending.current = null;
     setDirty(false);
   }, [meeting.id, saveNote]);
@@ -258,7 +274,13 @@ export function NotesPanel({ meeting }: { meeting: Meeting }) {
     return () => {
       window.removeEventListener("rhodes:flush", onFlush);
       if (timer.current) window.clearTimeout(timer.current);
-      if (pending.current != null) saveNote(meeting.id, pending.current);
+      if (pending.current != null) {
+        const draft = pending.current;
+        // Keep the draft in the module-level stash if the store refused it, so a
+        // remount of the same meeting can still save it.
+        if (!saveNote(meeting.id, draft)) unsavedDrafts.set(meeting.id, draft);
+        else unsavedDrafts.delete(meeting.id);
+      }
     };
   }, [meeting.id, saveNote, doSave, flush]);
 

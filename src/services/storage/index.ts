@@ -125,12 +125,24 @@ function bytesOf(text: string): number {
 
 export class LocalStorageAdapter implements StorageAdapter {
   readonly label = ADAPTER_LABEL;
+  /**
+   * Distinguishes copies written inside the same millisecond.
+   *
+   * Keys used to be `<stamp>.<reason>`, so two copies of the same reason in the
+   * same millisecond produced the same key and the second silently replaced the
+   * first — the operator lost one of the two preserved documents. The suffix
+   * below is monotonic per adapter instance and carries a random tail so it stays
+   * unique across reloads as well.
+   */
+  private snapshotSeq = 0;
 
   /** Write a preserved copy; returns the key or a reason it could not be written. */
   snapshot(raw: string, reason: string): { key: string } | { error: string } {
     try {
       const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-      const key = `${SNAPSHOT_PREFIX}${stamp}.${reason}`;
+      this.snapshotSeq += 1;
+      const unique = `${this.snapshotSeq.toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+      const key = `${SNAPSHOT_PREFIX}${stamp}.${reason}.${unique}`;
       window.localStorage.setItem(key, raw);
       this.pruneSnapshots();
       return { key };

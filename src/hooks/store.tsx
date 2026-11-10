@@ -42,7 +42,12 @@ export interface Store {
   updatePerson: (id: ID, patch: Partial<Person>) => void;
   deletePerson: (id: ID) => Promise<DestructiveResult>;
   // notes
-  saveNote: (meetingId: ID, content: string) => void;
+  /**
+   * Upsert the note for a meeting. Returns `true` when the store accepted the
+   * content (applied now, or queued behind an exclusive operation) and `false`
+   * when it refused — the editor then keeps its draft and its dirty state.
+   */
+  saveNote: (meetingId: ID, content: string) => boolean;
   // decisions
   createDecision: (input: { meetingId: ID; title: string; description: string; agendaItemId: ID | null; approvedBy: ID | null; decisionDate: string; status: Decision["status"] }) => void;
   updateDecision: (id: ID, patch: Partial<Decision>) => void;
@@ -230,8 +235,22 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
    * this mirror in the same statement.
    */
   const dataRef = useRef<AppData | null>(bootRef.current.data);
-  /** True while a record-removing operation is running; blocks re-entry. */
-  const destructiveRef = useRef(false);
+  /**
+   * Every storage write is queued on this chain, so writes reach the adapter in
+   * the order they were requested even when the adapter resolves slowly. The
+   * chain is the ordering guarantee; `opCount` only decides who may report the
+   * save indicator.
+   */
+  const writeChain = useRef<Promise<void>>(Promise.resolve());
+  /** Document waiting for its debounce to elapse (kept so it can be retried). */
+  const pendingDoc = useRef<AppData | null>(null);
+  /**
+   * Non-null while an exclusive operation (delete / reset / import / demo)
+   * owns the document. Exclusive operations never overlap each other.
+   */
+  const exclusiveRef = useRef<string | null>(null);
+  /** Edits made while an exclusive operation runs, applied in order afterwards. */
+  const deferredMutations = useRef<((d: AppData) => AppData)[]>([]);
 
   // Safety net: if any future code path commits `data` without touching the
   // mirror, the next committed render restores it.
@@ -284,19 +303,114 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     return () => { alive = false; };
   }, [source, applyOutcome, readFailure]);
 
+  /**
+   * Queue a storage write behind every write already requested.
+   *
+   * `then(task, task)` deliberately runs the task whether the previous link
+   * settled or failed: one failed save must not wedge the queue for the rest of
+   * the session, but it must still be *ordered* before anything that follows.
+   */
+  const enqueueWrite = useCallback(<T,>(task: () => Promise<T>): Promise<T> => {
+    const run = writeChain.current.then(task, task);
+    writeChain.current = run.then(() => undefined, () => undefined);
+    return run;
+  }, []);
+
+  /** Resolve once every write requested so far has settled. Never throws. */
+  const drainWrites = useCallback(() => enqueueWrite(() => Promise.resolve()), [enqueueWrite]);
+
+  /**
+   * The single place a document is handed to the adapter.
+   *
+   * `opCount` is bumped when the write is *queued*, so only the newest write may
+   * move the save indicator: an older save that resolves late cannot report
+   * "saved" over a newer one.
+   */
+  const writeDocument = useCallback((doc: AppData): Promise<{ bytes: number }> => {
+    const op = ++opCount.current;
+    return enqueueWrite(() => source.save(doc)).then(
+      (result) => {
+        if (opCount.current === op) setSaveState("saved");
+        return result;
+      },
+      (error) => {
+        if (opCount.current === op) setSaveState("error");
+        throw error;
+      },
+    );
+  }, [enqueueWrite, source]);
+
+  /**
+   * Hold a document for the debounce window, then write it.
+   *
+   * The document is kept in `pendingDoc` until the timer fires, so a refusal can
+   * put it back on the queue instead of losing it.
+   */
+  const scheduleWrite = useCallback((doc: AppData) => {
+    if (writesBlockedRef.current) return;
+    pendingDoc.current = doc;
+    setSaveState("saving");
+    if (persistTimer.current) window.clearTimeout(persistTimer.current);
+    persistTimer.current = window.setTimeout(() => {
+      // The timer has fired: stop claiming a write is pending, so callers can
+      // tell "queued" from "already sent to storage" by looking at the ref.
+      persistTimer.current = null;
+      const queued = pendingDoc.current;
+      pendingDoc.current = null;
+      if (!queued) return;
+      void writeDocument(queued).catch(() => undefined);
+    }, 280);
+  }, [writeDocument]);
+
   const persist = useCallback((next: AppData) => {
     // Defence in depth: `mutate` already refuses while writes are blocked, and a
     // timer scheduled before the lock cannot exist (the lock is known at boot).
     if (writesBlockedRef.current) return;
-    if (persistTimer.current) window.clearTimeout(persistTimer.current);
-    setSaveState("saving");
-    persistTimer.current = window.setTimeout(() => {
-      const op = ++opCount.current;
-      source.save(next)
-        .then(() => { if (opCount.current === op) setSaveState("saved"); })
-        .catch(() => { if (opCount.current === op) setSaveState("error"); });
-    }, 280);
-  }, [source]);
+    scheduleWrite(next);
+  }, [scheduleWrite]);
+
+  /**
+   * Take the document for an exclusive operation, or report why it cannot.
+   * Refuses under the recovery write lock and while another exclusive operation
+   * (delete, reset, import, demo) is running.
+   */
+  const beginExclusive = useCallback((kind: string): { ok: true } | { ok: false; error: string } => {
+    if (writesBlockedRef.current) {
+      return { ok: false, error: BLOCKED_WRITE_MESSAGE + " Nothing was changed." };
+    }
+    if (exclusiveRef.current) return { ok: false, error: BUSY_MESSAGE };
+    exclusiveRef.current = kind;
+    return { ok: true };
+  }, []);
+
+  /**
+   * Release the document and replay any edit that arrived while it was held.
+   * The replay is persisted through the same chain, so it can never overtake the
+   * operation's own write.
+   */
+  const endExclusive = useCallback(() => {
+    exclusiveRef.current = null;
+    const deferred = deferredMutations.current;
+    deferredMutations.current = [];
+    if (!deferred.length) return;
+
+    const base = dataRef.current;
+    if (!base) return;
+    let next = base;
+    for (const transform of deferred) next = transform(next);
+
+    // A note typed while its meeting was being deleted must not reappear as an
+    // orphan record: notes belong to their meeting.
+    const meetingIds = new Set(next.meetings.map((m) => m.id));
+    if (next.notes.some((n) => !meetingIds.has(n.meetingId))) {
+      next = { ...next, notes: next.notes.filter((n) => meetingIds.has(n.meetingId)) };
+    }
+
+    if (next === base) return;
+    dataRef.current = next;
+    setData(next);
+    persist(next);
+  }, [persist]);
 
   /**
    * Apply a change to the records.
@@ -305,17 +419,21 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
    * state updater, so persistence stays a plain side effect of the handler that
    * asked for the change rather than something React may run twice, defer or
    * discard. A no-op transform (same object identity) writes nothing.
+   *
+   * While an exclusive operation owns the document the change is **queued**, not
+   * dropped: it is applied to whatever document the operation leaves behind.
+   * Only the recovery write lock refuses outright.
    */
   const mutate = useCallback((fn: (d: AppData) => AppData) => {
-    if (writesBlockedRef.current) return;   // read-only until a second copy exists
-    // A record-removing operation owns the document while it runs: letting a
-    // keystroke mutate underneath it would either be dropped by its write or
-    // overwrite the result it is about to commit.
-    if (destructiveRef.current) return;
+    if (writesBlockedRef.current) return { ok: false, reason: "blocked" as const };
+    if (exclusiveRef.current) {
+      deferredMutations.current.push(fn);
+      return { ok: true, deferred: true };
+    }
     const prev = dataRef.current;
-    if (!prev) return;
+    if (!prev) return { ok: false, reason: "empty" as const };
     const next = fn(prev);
-    if (next === prev) return;              // nothing changed — no write, no render
+    if (next === prev) return { ok: true };   // nothing changed — no write, no render
     dataRef.current = next;
     setData(next);
     persist(next);
@@ -359,12 +477,15 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
    *
    * Order is deliberate and every step can refuse:
    *   1 · the adapter must be able to read *and* snapshot — otherwise refuse;
-   *   2 · storage must be readable. A failed read is never treated as "there is
-   *       nothing stored": that is exactly the payload the copy exists to keep;
-   *   3 · a debounced write still waiting in the queue is written first, so the
-   *       preserved copy includes the changes the operator can already see;
-   *   4 · the copy is written under a reason label;
-   *   5 · the copy is read back and compared before anything is removed.
+   *   2 · storage must be **read before** the pending autosave is touched. A
+   *       failed read must not cost the operator their queued edits: the timer
+   *       stays armed and will write them as soon as storage is readable again;
+   *   3 · writes already in flight are awaited, so the copy describes the
+   *       document storage has actually reached;
+   *   4 · a debounced write still waiting in the queue is written first, so the
+   *       copy includes the changes the operator can already see;
+   *   5 · the copy is written under a reason label and read back before anything
+   *       is removed.
    */
   const preserveBeforeDestructive = useCallback(async (
     reason: string,
@@ -386,48 +507,70 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
       };
     }
 
-    // A write left over from an earlier edit must not land after the snapshot or
-    // after the new document.
-    const hadPendingWrite = persistTimer.current !== null;
-    if (persistTimer.current) {
-      window.clearTimeout(persistTimer.current);
-      persistTimer.current = null;
-    }
-
+    // 1 · Read first. Cancelling the debounce before knowing the store can be
+    //     read would leave the operator's newest edits in memory only — one
+    //     reload away from being lost — for an operation that is about to be
+    //     refused anyway.
     const first = source.readRaw();
     if (!first.ok) {
       return {
         ok: false,
-        error: `The stored records could not be read (${first.error}), so nothing was removed and no recovery copy was taken.`,
+        error:
+          `The stored records could not be read (${first.error}), so nothing was removed and no recovery copy was taken. ` +
+          "Your pending changes are still queued and will be saved when storage can be read again.",
       };
     }
 
-    // The preserved copy must describe the records on screen, including changes
-    // that are still only in memory.
+    // 2 · A save that is already running must land before the payload is read
+    //     again, or the copy would describe a document storage has moved past.
+    await drainWrites();
+
     const memoryRaw = JSON.stringify(current);
-    let payload = first.raw;
-    if (payload === null || payload !== memoryRaw) {
-      try {
-        await source.save(current);
-      } catch (error) {
-        setSaveState("error");
-        return {
-          ok: false,
-          error: `The pending changes could not be written to storage (${failureText(error)}), so the operation was cancelled and nothing was changed.`,
-        };
-      }
-      const second = source.readRaw();
-      if (!second.ok) {
-        return {
-          ok: false,
-          error: `The stored records could not be read back (${second.error}), so nothing was removed and no recovery copy was taken.`,
-        };
-      }
-      payload = second.raw ?? memoryRaw;
+    const stored = source.readRaw();
+    if (!stored.ok) {
+      return {
+        ok: false,
+        error: `The stored records could not be read back (${stored.error}), so nothing was removed and no recovery copy was taken.`,
+      };
     }
 
-    // Everything the operator could see is on disk at this point.
-    if (hadPendingWrite) setSaveState("saved");
+    let payload: string;
+    if (stored.raw === null || stored.raw !== memoryRaw) {
+      // Storage has not caught up with what the operator is looking at. Write the
+      // in-memory document now; the copy below is then exactly that document.
+      if (persistTimer.current) {
+        window.clearTimeout(persistTimer.current);
+        persistTimer.current = null;
+      }
+      pendingDoc.current = null;
+      setSaveState("saving");
+      try {
+        await writeDocument(current);
+      } catch (error) {
+        // Put the document back on the queue: the operation is refused, but the
+        // edits must still reach storage once it accepts writes again.
+        scheduleWrite(current);
+        return {
+          ok: false,
+          error:
+            `The pending changes could not be written to storage (${failureText(error)}), so the operation was cancelled and nothing was changed. ` +
+            "They are still queued and will be saved when storage accepts them.",
+        };
+      }
+      const after = source.readRaw();
+      payload = after.ok ? after.raw ?? memoryRaw : memoryRaw;
+    } else {
+      // Storage already matches memory, so a queued timer would only write the
+      // same bytes. Clearing it loses nothing — but the indicator must stop
+      // saying "saving", because nothing is pending any more.
+      if (persistTimer.current) {
+        window.clearTimeout(persistTimer.current);
+        persistTimer.current = null;
+        setSaveState("saved");
+      }
+      pendingDoc.current = null;
+      payload = stored.raw;
+    }
 
     const saved = source.snapshot(payload, reason);
     if ("error" in saved) {
@@ -441,10 +584,10 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     if (!verified.ok) return { ok: false, error: verified.error };
 
     return { ok: true, snapshotKey: saved.key, raw: payload };
-  }, [source, verifySnapshot]);
+  }, [source, verifySnapshot, drainWrites, writeDocument, scheduleWrite]);
 
   /**
-   * Run a record-removing transform: preserve → write → commit.
+   * Run a record-removing transform: lock → preserve → write → commit → replay.
    *
    * The records only change in React state after storage has accepted the new
    * document, so a failed write leaves the operator looking at exactly what is
@@ -454,21 +597,17 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     reason: string,
     fn: (d: AppData) => AppData,
   ): Promise<DestructiveResult> => {
-    if (writesBlockedRef.current) {
-      return { ok: false, error: BLOCKED_WRITE_MESSAGE + " Nothing was changed." };
-    }
-    if (destructiveRef.current) {
-      return { ok: false, error: BUSY_MESSAGE };
-    }
     const start = dataRef.current;
     if (!start) {
       return { ok: false, error: "No records are loaded, so nothing was changed." };
     }
-    // Nothing to remove: do not spend a snapshot slot on an unchanged document.
-    if (fn(start) === start) return { ok: true };
 
-    destructiveRef.current = true;
+    const opened = beginExclusive(`destructive:${reason}`);
+    if (!opened.ok) return { ok: false, error: opened.error };
     try {
+      // Nothing to remove: do not spend a snapshot slot on an unchanged document.
+      if (fn(start) === start) return { ok: true };
+
       const preserved = await preserveBeforeDestructive(reason);
       if (!preserved.ok) return { ok: false, error: preserved.error };
 
@@ -477,12 +616,11 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
       const next = fn(base);
       if (next === base) return { ok: true, snapshotKey: preserved.snapshotKey };
 
-      opCount.current += 1;   // a save still in flight must not report over this one
       setSaveState("saving");
       try {
-        await source.save(next);
+        // Chained: a save started before this operation cannot land after it.
+        await writeDocument(next);
       } catch (error) {
-        setSaveState("error");
         return {
           ok: false,
           snapshotKey: preserved.snapshotKey,
@@ -494,12 +632,11 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
 
       dataRef.current = next;
       setData(next);
-      setSaveState("saved");
       return { ok: true, snapshotKey: preserved.snapshotKey };
     } finally {
-      destructiveRef.current = false;
+      endExclusive();
     }
-  }, [source, preserveBeforeDestructive]);
+  }, [beginExclusive, endExclusive, preserveBeforeDestructive, writeDocument]);
 
   const touch = (m: Meeting): Meeting => ({ ...m, updatedAt: new Date().toISOString() });
 
@@ -627,8 +764,8 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
   }), [runDestructive]);
 
   // ── Notes (upsert) ──────────────────────────────────────────
-  const saveNote = useCallback((meetingId: ID, content: string) => {
-    mutate((d) => {
+  const saveNote = useCallback((meetingId: ID, content: string): boolean => {
+    const result = mutate((d) => {
       const existing = d.notes.find((n) => n.meetingId === meetingId);
       if (existing) {
         if (existing.content === content) return d;
@@ -636,6 +773,9 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
       }
       return { ...d, notes: [...d.notes, { id: uid("n"), meetingId, content, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }] };
     });
+    // `false` means the store refused (write lock) — the caller must keep its
+    // draft and the editor must not clear its dirty state.
+    return result.ok === true;
   }, [mutate]);
 
   // ── Decisions ───────────────────────────────────────────────
@@ -708,26 +848,28 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
         error: BLOCKED_WRITE_MESSAGE,
       };
     }
-    if (destructiveRef.current) {
+    if (exclusiveRef.current) {
       return { ok: false, error: BUSY_MESSAGE };
     }
     if (persistTimer.current) {
       window.clearTimeout(persistTimer.current);
       persistTimer.current = null;
     }
+    pendingDoc.current = null;
     setSaveState("saving");
     try {
-      await source.save(current);
-      setSaveState("saved");
+      await writeDocument(current);
       return { ok: true };
     } catch (error) {
-      setSaveState("error");
+      // Keep the document on the queue so a retry — or the next edit — cannot
+      // lose it, and so the indicator settles instead of staying on "saving".
+      scheduleWrite(current);
       return {
         ok: false,
-        error: `Could not write to storage (${failureText(error)}). Nothing was persisted.`,
+        error: `Could not write to storage (${failureText(error)}). Nothing was persisted; your records are still queued for retry.`,
       };
     }
-  }, [source]);
+  }, [writeDocument, scheduleWrite]);
 
   const exportJSON = useCallback((): string => JSON.stringify(data, null, 2), [data]);
 
@@ -783,84 +925,90 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     if (!result.usable || !result.data || !result.clean) {
       return { ok: false, error: `Import refused — ${importRejectionReason(result)}. No records were changed.` };
     }
-    if (writesBlockedRef.current) {
-      return {
-        ok: false,
-        error: BLOCKED_WRITE_MESSAGE + " No records were changed.",
-      };
-    }
 
-    // 1 · a recovery snapshot is mandatory before anything is replaced
-    if (!source.snapshot || !source.readRaw) {
-      return {
-        ok: false,
-        error: "This storage adapter cannot create a recovery snapshot, so the import was cancelled and the current records were left unchanged.",
-      };
-    }
-
-    // 1a · distinguish "nothing stored" from "storage could not be read".
-    // A failed read must cancel the import: the records it failed to read are
-    // exactly the ones the snapshot exists to protect.
-    const read = source.readRaw();
-    if (!read.ok) {
-      return {
-        ok: false,
-        error: `The stored records could not be read (${read.error}), so the import was cancelled and nothing was changed.`,
-      };
-    }
-
-    let snapshotKey: string | undefined;
-    if (read.raw !== null) {
-      // 1b · the live payload exists — preserve its exact bytes.
-      const saved = source.snapshot(read.raw, "pre-import");
-      if ("error" in saved) {
-        return {
-          ok: false,
-          error: `Could not create a recovery snapshot (${saved.error}). The import was cancelled and the current records were left unchanged.`,
-        };
-      }
-      snapshotKey = saved.key;
-    } else {
-      // 1c · the key is genuinely absent. In-memory records may still be the only
-      // copy of what the operator is about to replace, so preserve them too.
-      const memory = dataRef.current;
-      if (!memory) {
-        return {
-          ok: false,
-          error: "No records are loaded, so there is nothing to preserve and the import was cancelled.",
-        };
-      }
-      const saved = source.snapshot(JSON.stringify(memory, null, 2), "pre-import-memory");
-      if ("error" in saved) {
-        return {
-          ok: false,
-          error: `Could not preserve the records held in memory (${saved.error}). The import was cancelled and nothing was changed.`,
-        };
-      }
-      snapshotKey = saved.key;
-    }
-
-    // 2 · persist first; a pending debounce must not race the import
-    if (persistTimer.current) {
-      window.clearTimeout(persistTimer.current);
-      persistTimer.current = null;
-    }
-    opCount.current += 1;   // ignore any save still in flight
+    // The import replaces every record, so it takes the same exclusive lock as a
+    // delete: it can never run beside one, and never under the write lock.
+    const opened = beginExclusive("import");
+    if (!opened.ok) return { ok: false, error: opened.error + " No records were changed." };
     try {
-      await source.save(result.data);
-    } catch (error) {
-      return {
-        ok: false,
-        error: `The imported records could not be written to storage (${error instanceof Error ? error.message : String(error)}). The existing records were left unchanged.`,
-      };
-    }
+      // 1 · a recovery snapshot is mandatory before anything is replaced
+      if (!source.snapshot || !source.readRaw) {
+        return {
+          ok: false,
+          error: "This storage adapter cannot create a recovery snapshot, so the import was cancelled and the current records were left unchanged.",
+        };
+      }
 
-    // 3 · commit
-    dataRef.current = result.data;
-    setData(result.data);
-    setSaveState("saved");
-    return { ok: true, snapshotKey, counts: result.counts };
-  }, [source]);
+      // 1a · let any write that is already running land first, so the copy
+      //      describes the document storage actually holds.
+      await drainWrites();
+
+      // 1b · distinguish "nothing stored" from "storage could not be read".
+      // A failed read must cancel the import: the records it failed to read are
+      // exactly the ones the snapshot exists to protect.
+      const read = source.readRaw();
+      if (!read.ok) {
+        return {
+          ok: false,
+          error: `The stored records could not be read (${read.error}), so the import was cancelled and nothing was changed.`,
+        };
+      }
+
+      let snapshotKey: string | undefined;
+      if (read.raw !== null) {
+        // 1c · the live payload exists — preserve its exact bytes.
+        const saved = source.snapshot(read.raw, "pre-import");
+        if ("error" in saved) {
+          return {
+            ok: false,
+            error: `Could not create a recovery snapshot (${saved.error}). The import was cancelled and the current records were left unchanged.`,
+          };
+        }
+        snapshotKey = saved.key;
+      } else {
+        // 1d · the key is genuinely absent. In-memory records may still be the only
+        // copy of what the operator is about to replace, so preserve them too.
+        const memory = dataRef.current;
+        if (!memory) {
+          return {
+            ok: false,
+            error: "No records are loaded, so there is nothing to preserve and the import was cancelled.",
+          };
+        }
+        const saved = source.snapshot(JSON.stringify(memory, null, 2), "pre-import-memory");
+        if ("error" in saved) {
+          return {
+            ok: false,
+            error: `Could not preserve the records held in memory (${saved.error}). The import was cancelled and nothing was changed.`,
+          };
+        }
+        snapshotKey = saved.key;
+      }
+
+      // 2 · persist first; a pending debounce must not race the import
+      if (persistTimer.current) {
+        window.clearTimeout(persistTimer.current);
+        persistTimer.current = null;
+      }
+      pendingDoc.current = null;
+      setSaveState("saving");
+      try {
+        await writeDocument(result.data);
+      } catch (error) {
+        return {
+          ok: false,
+          error: `The imported records could not be written to storage (${failureText(error)}). The existing records were left unchanged.`,
+        };
+      }
+
+      // 3 · commit
+      dataRef.current = result.data;
+      setData(result.data);
+      return { ok: true, snapshotKey, counts: result.counts };
+    } finally {
+      endExclusive();
+    }
+  }, [source, beginExclusive, endExclusive, drainWrites, writeDocument]);
 
   /**
    * A browser download is only an *initiation*: the page cannot verify that the
@@ -916,31 +1064,39 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
         error: NO_COPY_MESSAGE,
       };
     }
-    const seed = buildSeedData();
+    // Same exclusive lock as a delete or a reset: it replaces every document, so
+    // it must never overlap one.
+    const opened = beginExclusive("demo");
+    if (!opened.ok) return { ok: false, error: opened.error };
     try {
-      await source.save(seed);
-    } catch (error) {
-      return {
-        ok: false,
-        error: `The demonstration dataset could not be written (${error instanceof Error ? error.message : String(error)}). Nothing was changed.`,
-      };
+      const seed = buildSeedData();
+      if (persistTimer.current) {
+        window.clearTimeout(persistTimer.current);
+        persistTimer.current = null;
+      }
+      pendingDoc.current = null;
+      setSaveState("saving");
+      try {
+        await writeDocument(seed);
+      } catch (error) {
+        return {
+          ok: false,
+          error: `The demonstration dataset could not be written (${failureText(error)}). Nothing was changed.`,
+        };
+      }
+      dataRef.current = seed;
+      setData(seed);
+      setRecovery(null);
+      return { ok: true };
+    } finally {
+      endExclusive();
     }
-    dataRef.current = seed;
-    setData(seed);
-    setSaveState("saved");
-    setRecovery(null);
-    return { ok: true };
-  }, [source]);
+  }, [beginExclusive, endExclusive, writeDocument]);
 
   const resetToDemo = useCallback(async (): Promise<DestructiveResult> => {
-    if (writesBlockedRef.current) {
-      return { ok: false, error: BLOCKED_WRITE_MESSAGE + " Nothing was changed." };
-    }
-    if (destructiveRef.current) {
-      return { ok: false, error: BUSY_MESSAGE };
-    }
+    const opened = beginExclusive("destructive:pre-reset");
+    if (!opened.ok) return { ok: false, error: opened.error };
 
-    destructiveRef.current = true;
     try {
       // Replacing every record is as destructive as deleting one: the copy has
       // to exist, and has to be readable back, before anything is touched.
@@ -953,12 +1109,10 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
       // state updater: persistence is a side effect and must not run inside one.
       const next: AppData = { ...seed, settings: base ? base.settings : seed.settings };
 
-      opCount.current += 1;   // ignore any save still in flight
       setSaveState("saving");
       try {
-        await source.save(next);
+        await writeDocument(next);
       } catch (error) {
-        setSaveState("error");
         return {
           ok: false,
           snapshotKey: preserved.snapshotKey,
@@ -971,12 +1125,11 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
       // Only now is the reset real.
       dataRef.current = next;
       setData(next);
-      setSaveState("saved");
       return { ok: true, snapshotKey: preserved.snapshotKey };
     } finally {
-      destructiveRef.current = false;
+      endExclusive();
     }
-  }, [source, preserveBeforeDestructive]);
+  }, [beginExclusive, endExclusive, preserveBeforeDestructive, writeDocument]);
 
   const restoreDefaultSettings = useCallback(() => {
     updateSettings({ ...DEFAULT_SETTINGS });
