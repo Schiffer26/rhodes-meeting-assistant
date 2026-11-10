@@ -8,19 +8,23 @@ import {
 } from "lucide-react";
 import { Button, ConfirmDialog, PageHeader, Panel, Reveal, Stagger, StaggerItem } from "@/components/ui";
 import { useAppData } from "@/hooks/store";
+import type { ImportPreview } from "@/hooks/store";
 import { useToast } from "@/components/toast";
 import { storage } from "@/services/storage";
 import { downloadFile, friendlyBytes, readFileText } from "@/utils/helpers";
 import type { Density, FontSize, MotionPref, ThemeMode } from "@/types";
 
 export function SystemConfiguration() {
-  const { data, updateSettings, exportJSON, importJSON, resetToDemo, restoreDefaultSettings } = useAppData();
+  const { data, updateSettings, exportJSON, previewImport, importJSON, resetToDemo, restoreDefaultSettings } = useAppData();
   const toast = useToast();
   const s = data.settings;
   const fileRef = useRef<HTMLInputElement>(null);
   const [usage, setUsage] = useState<{ bytes: number; keys: number } | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
   const [confirmDefaults, setConfirmDefaults] = useState(false);
+  // A backup file is inspected first and only applied after an explicit confirm.
+  const [pending, setPending] = useState<{ name: string; text: string; preview: ImportPreview } | null>(null);
+  const [importing, setImporting] = useState(false);
 
   const refreshUsage = () => storage.usageInfo().then(setUsage).catch(() => setUsage(null));
   useEffect(() => { refreshUsage(); }, [data.meta.firstRunAt, data.meetings.length, data.actionItems.length, data.personnel.length]);
@@ -177,9 +181,10 @@ export function SystemConfiguration() {
                 if (!file) return;
                 try {
                   const text = await readFileText(file);
-                  const res = importJSON(text);
-                  if (res.ok) { toast.success(`Backup imported from ${file.name}.`); refreshUsage(); }
-                  else toast.error(res.error ?? "Import failed.");
+                  // Read-only inspection: nothing is written or replaced yet.
+                  const preview = previewImport(text);
+                  if (!preview.ok) { toast.error(preview.error ?? "Import failed."); return; }
+                  setPending({ name: file.name, text, preview });
                 } catch {
                   toast.error("File could not be read.");
                 }
@@ -218,6 +223,52 @@ export function SystemConfiguration() {
           </div>
         </Panel>
       </Reveal>
+
+      <ConfirmDialog open={!!pending} onCancel={() => { if (!importing) setPending(null); }} title="Replace All Records"
+        confirmLabel={importing ? "Importing…" : "Replace records"}
+        onConfirm={async () => {
+          if (!pending || importing) return;
+          setImporting(true);
+          const res = await importJSON(pending.text);
+          setImporting(false);
+          setPending(null);
+          if (res.ok) {
+            toast.success(`Backup imported from ${pending.name}.`);
+            refreshUsage();
+          } else {
+            toast.error(res.error ?? "Import failed. No records were changed.");
+          }
+        }}
+        message={pending && (
+          <div style={{ lineHeight: 1.6 }}>
+            <div>
+              This replaces <b>all</b> current records with the contents of <b>{pending.name}</b>.
+            </div>
+            <dl className="kv" style={{ marginTop: 10 }}>
+              <dt>Incoming</dt>
+              <dd>
+                {pending.preview.counts?.meetings ?? 0} meetings · {pending.preview.counts?.personnel ?? 0} personnel ·{" "}
+                {pending.preview.counts?.actionItems ?? 0} action items · {pending.preview.counts?.notes ?? 0} notes ·{" "}
+                {pending.preview.counts?.decisions ?? 0} decisions
+              </dd>
+              <dt>Current</dt>
+              <dd>
+                {pending.preview.current?.meetings ?? 0} meetings · {pending.preview.current?.personnel ?? 0} personnel ·{" "}
+                {pending.preview.current?.actionItems ?? 0} action items · {pending.preview.current?.notes ?? 0} notes ·{" "}
+                {pending.preview.current?.decisions ?? 0} decisions
+              </dd>
+            </dl>
+            {(pending.preview.counts?.total ?? 0) === 0 && (
+              <div className="small" style={{ marginTop: 10, color: "var(--warn)", fontWeight: 600 }}>
+                This file contains no records. Confirming will leave the registry empty.
+              </div>
+            )}
+            <div className="small dim-2" style={{ marginTop: 10 }}>
+              A recovery snapshot of the current records is written before anything is replaced, and the
+              new records are only applied once they have been written successfully.
+            </div>
+          </div>
+        )} />
 
       <ConfirmDialog open={confirmReset} onCancel={() => setConfirmReset(false)} title="Reset Sample Data"
         message="Replace ALL current records with the original demonstration dataset? Your interface preferences (theme, motion, formats) are preserved. This cannot be undone."

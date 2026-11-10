@@ -112,7 +112,13 @@ export interface AppData {
   decisions: Decision[];
   actionItems: ActionItem[];
   settings: AppSettings;
-  meta: { version: number; firstRunAt: string; adapter: string };
+  meta: {
+    version: number;
+    firstRunAt: string;
+    adapter: string;
+    /** Schema generation of this payload; absent means the original v1 records. */
+    schemaVersion?: number;
+  };
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {

@@ -9,8 +9,9 @@ import type {
   Decision, Meeting, MeetingStatus, Person, Priority, SaveState, TaskStatus,
 } from "@/types";
 import { DEFAULT_SETTINGS } from "@/types";
-import { storage, validateImport } from "@/services/storage";
-import type { StorageAdapter } from "@/services/storage";
+import { emptyAppData, normaliseOutcome, storage } from "@/services/storage";
+import type { LoadOutcome, RecoveryInfo, StorageAdapter } from "@/services/storage";
+import { summarise, validateAppData } from "@/services/validation";
 import { buildSeedData } from "@/data/seed";
 import { todayISO, uid } from "@/utils/helpers";
 
@@ -59,9 +60,41 @@ export interface Store {
   updateSettings: (patch: Partial<AppSettings>) => void;
   flush: () => void;
   exportJSON: () => string;
-  importJSON: (json: string) => { ok: boolean; error?: string };
+  /** Read-only inspection of a backup file: nothing is written or replaced. */
+  previewImport: (json: string) => ImportPreview;
+  /**
+   * Replace all records with a validated backup.
+   *
+   * Order is deliberate: validate → preserve the current payload → write →
+   * only then commit to React state. A failure at any step leaves the live
+   * records exactly as they were.
+   */
+  importJSON: (json: string) => Promise<ImportResult>;
   resetToDemo: () => void;
   restoreDefaultSettings: () => void;
+  // recovery surface (1.3.11)
+  recovery: RecoveryInfo | null;
+  /** True while the recovered payload blocks normal use (corrupt / invalid). */
+  recoveryBlocking: boolean;
+  /** Acknowledge the notice and continue with the records currently in memory. */
+  dismissRecovery: () => void;
+  /** Explicit, confirmed choice to start from the demonstration dataset. */
+  startWithDemoData: () => Promise<{ ok: boolean; error?: string }>;
+}
+
+export interface ImportPreview {
+  ok: boolean;
+  error?: string;
+  counts?: Record<string, number>;
+  current?: Record<string, number>;
+  warnings?: string[];
+}
+
+export interface ImportResult {
+  ok: boolean;
+  error?: string;
+  snapshotKey?: string;
+  counts?: Record<string, number>;
 }
 
 const Ctx = createContext<Store | null>(null);
@@ -94,17 +127,48 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
   // Hydrate during the first render when the adapter can read synchronously:
   // the startup decision (boot vs. shell) must not wait for an effect, or the
   // shell could paint for a frame before the boot sequence takes over.
-  const [data, setData] = useState<AppData | null>(() => source.loadSync?.() ?? null);
+  // Hydration is memoised in a ref rather than a useState initialiser so the
+  // adapter is queried exactly once, even under StrictMode's double render.
+  const bootRef = useRef<{ data: AppData | null; recovery: RecoveryInfo | null } | null>(null);
+  if (bootRef.current === null) {
+    const outcome = normaliseOutcome(source.loadSync?.() ?? null);
+    bootRef.current = outcome
+      ? { data: outcome.data, recovery: outcome.recovery ?? null }
+      : { data: null, recovery: null };
+  }
+  const [data, setData] = useState<AppData | null>(bootRef.current.data);
+  const [recovery, setRecovery] = useState<RecoveryInfo | null>(bootRef.current.recovery);
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const ready = data !== null;
-  const hydratedOnFirstRender = useRef(data !== null);
+  const hydratedOnFirstRender = useRef(bootRef.current.data !== null);
   const persistTimer = useRef<number | null>(null);
   const opCount = useRef(0);
 
   useEffect(() => {
     if (hydratedOnFirstRender.current) return;   // already hydrated above
     let alive = true;
-    source.load().then((d) => alive && setData(d));
+    source.load()
+      .then((loaded) => {
+        if (!alive) return;
+        const outcome: LoadOutcome | null = normaliseOutcome(loaded ?? null);
+        if (!outcome) return;
+        setRecovery(outcome.recovery ?? null);
+        setData(outcome.data);
+      })
+      .catch((error) => {
+        // A failing adapter must not leave the gate spinning forever, and must
+        // not be "fixed" by inventing records.
+        if (!alive) return;
+        setRecovery({
+          kind: "invalid",
+          message: "The record store could not be opened, so no records were changed.",
+          details: [error instanceof Error ? error.message : String(error)],
+          snapshotKey: null,
+          preservedRaw: null,
+          counts: { kept: 0, dropped: 0 },
+        });
+        setData(emptyAppData(source.label));
+      });
     return () => { alive = false; };
   }, [source]);
 
@@ -329,18 +393,120 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
 
   const exportJSON = useCallback((): string => JSON.stringify(data, null, 2), [data]);
 
-  const importJSON = useCallback((json: string): { ok: boolean; error?: string } => {
+  const countOf = (d: AppData | null): Record<string, number> => ({
+    meetings: d?.meetings.length ?? 0,
+    agendaItems: d?.agendaItems.length ?? 0,
+    personnel: d?.personnel.length ?? 0,
+    notes: d?.notes.length ?? 0,
+    decisions: d?.decisions.length ?? 0,
+    actionItems: d?.actionItems.length ?? 0,
+    total:
+      (d?.meetings.length ?? 0) + (d?.agendaItems.length ?? 0) + (d?.personnel.length ?? 0) +
+      (d?.notes.length ?? 0) + (d?.decisions.length ?? 0) + (d?.actionItems.length ?? 0),
+  });
+
+  /**
+   * Inspect a backup without touching anything. Used to build the confirmation
+   * step: the operator sees exactly what would be replaced before deciding.
+   */
+  const previewImport = useCallback((json: string): ImportPreview => {
+    let parsed: unknown;
     try {
-      const parsed = JSON.parse(json) as AppData;
-      if (!validateImport(parsed)) return { ok: false, error: "File does not match the RHODES data schema." };
-      parsed.settings = { ...DEFAULT_SETTINGS, ...parsed.settings };
-      setData(parsed);
-      persist(parsed);
-      return { ok: true };
+      parsed = JSON.parse(json);
     } catch {
       return { ok: false, error: "File is not valid JSON." };
     }
-  }, [persist]);
+    const result = validateAppData(parsed);
+    if (!result.usable || !result.data) {
+      return { ok: false, error: summarise(result.fatal) || "File does not match the RHODES data schema." };
+    }
+    if (!result.clean) {
+      return {
+        ok: false,
+        error: `Import refused — ${summarise(result.dropped)}. No records were changed.`,
+      };
+    }
+    return { ok: true, counts: result.counts, current: countOf(data), warnings: result.repaired };
+  }, [data]);
+
+  /**
+   * Validate → snapshot the current payload → write → commit.
+   * Nothing in React state changes until the write has succeeded.
+   */
+  const importJSON = useCallback(async (json: string): Promise<ImportResult> => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(json);
+    } catch {
+      return { ok: false, error: "File is not valid JSON." };
+    }
+
+    const result = validateAppData(parsed);
+    if (!result.usable || !result.data) {
+      return { ok: false, error: summarise(result.fatal) || "File does not match the RHODES data schema." };
+    }
+    if (!result.clean) {
+      return { ok: false, error: `Import refused — ${summarise(result.dropped)}. No records were changed.` };
+    }
+
+    // 1 · a recovery snapshot is mandatory before anything is replaced
+    if (!source.snapshot || !source.readRaw) {
+      return {
+        ok: false,
+        error: "This storage adapter cannot create a recovery snapshot, so the import was cancelled and the current records were left unchanged.",
+      };
+    }
+    const currentRaw = source.readRaw();
+    let snapshotKey: string | undefined;
+    if (currentRaw !== null) {
+      const saved = source.snapshot(currentRaw, "pre-import");
+      if ("error" in saved) {
+        return {
+          ok: false,
+          error: `Could not create a recovery snapshot (${saved.error}). The import was cancelled and the current records were left unchanged.`,
+        };
+      }
+      snapshotKey = saved.key;
+    }
+
+    // 2 · persist first; a pending debounce must not race the import
+    if (persistTimer.current) {
+      window.clearTimeout(persistTimer.current);
+      persistTimer.current = null;
+    }
+    opCount.current += 1;   // ignore any save still in flight
+    try {
+      await source.save(result.data);
+    } catch (error) {
+      return {
+        ok: false,
+        error: `The imported records could not be written to storage (${error instanceof Error ? error.message : String(error)}). The existing records were left unchanged.`,
+      };
+    }
+
+    // 3 · commit
+    setData(result.data);
+    setSaveState("saved");
+    return { ok: true, snapshotKey, counts: result.counts };
+  }, [source]);
+
+  const dismissRecovery = useCallback(() => setRecovery(null), []);
+
+  const startWithDemoData = useCallback(async (): Promise<{ ok: boolean; error?: string }> => {
+    const seed = buildSeedData();
+    try {
+      await source.save(seed);
+    } catch (error) {
+      return {
+        ok: false,
+        error: `The demonstration dataset could not be written (${error instanceof Error ? error.message : String(error)}). Nothing was changed.`,
+      };
+    }
+    setData(seed);
+    setSaveState("saved");
+    setRecovery(null);
+    return { ok: true };
+  }, [source]);
 
   const resetToDemo = useCallback(() => {
     const seed = buildSeedData();
@@ -358,6 +524,7 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
 
   const value = useMemo<Store>(() => ({
     ready: ready, data: data ?? LOADING_DATA, saveState,
+    recovery, recoveryBlocking: recovery !== null && (recovery.kind === "corrupt" || recovery.kind === "invalid"),
     createMeeting, updateMeeting, deleteMeeting, setMeetingStatus,
     addAgendaItem, updateAgendaItem, deleteAgendaItem, moveAgendaItem, setAgendaStatus,
     createPerson, updatePerson, deletePerson,
@@ -365,9 +532,10 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     createDecision, updateDecision, deleteDecision,
     createActionItem, updateActionItem, deleteActionItem, setActionStatus,
     addAttendee, removeAttendee, setAttendance,
-    updateSettings, flush, exportJSON, importJSON, resetToDemo, restoreDefaultSettings,
+    updateSettings, flush, exportJSON, previewImport, importJSON, resetToDemo, restoreDefaultSettings,
+    dismissRecovery, startWithDemoData,
   }), [
-    ready, data, saveState, createMeeting, updateMeeting, deleteMeeting, setMeetingStatus,
+    ready, data, saveState, recovery, previewImport, dismissRecovery, startWithDemoData, createMeeting, updateMeeting, deleteMeeting, setMeetingStatus,
     addAgendaItem, updateAgendaItem, deleteAgendaItem, moveAgendaItem, setAgendaStatus,
     createPerson, updatePerson, deletePerson, saveNote,
     createDecision, updateDecision, deleteDecision,

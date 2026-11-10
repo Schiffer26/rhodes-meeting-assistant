@@ -21,6 +21,8 @@ import { RecordsArchive } from "@/features/archive/RecordsArchive";
 import { SystemConfiguration } from "@/features/settings/SystemConfiguration";
 import { BootCenterLogo, BOOT_CENTER_LOGO_SRC } from "@/components/BootCenterLogo";
 import { Button, Field, Modal } from "@/components/ui";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { RecoveryBanner, RecoveryScreen } from "@/components/Recovery";
 import { todayISO } from "@/utils/helpers";
 
 // ── Boot sequence ─────────────────────────────────────────────
@@ -379,6 +381,7 @@ function Core() {
 
   return (
     <UiContext.Provider value={ui}>
+      <RecoveryBanner />
       <AnimatePresence>{showBoot && <BootSequence key="boot" done={() => setBooted(true)} />}</AnimatePresence>
 
       {/* The shell mounts only after the hand-off — nothing of the Command
@@ -399,7 +402,8 @@ function Core() {
                 initial={{ top: "0%", opacity: 0.9 }} animate={{ top: "100%", opacity: 0 }}
                 transition={{ duration: 0.42, ease: "linear" }} />
             )}
-            {renderSection()}
+            {/* One faulty screen must never take the whole console down (1.3.11). */}
+            <ErrorBoundary scope="screen" key={wipeKey}>{renderSection()}</ErrorBoundary>
             <div style={{ height: 48 }} />
             {/* Status strip. On the two screens that paint a page artwork the
                 strip keeps its own contrast (local scrim + one contrast step),
@@ -426,7 +430,10 @@ function Core() {
 }
 
 function Gate() {
-  const { ready } = useAppData();
+  const { ready, recoveryBlocking } = useAppData();
+  // A payload that could not be trusted blocks the console: the operator must
+  // see what was preserved before any new write can reach the live key.
+  if (ready && recoveryBlocking) return <RecoveryScreen />;
   if (!ready) {
     // Only reachable when an adapter cannot hydrate synchronously. It uses the
     // boot field's own palette, so the transition into the boot screen is a
@@ -444,7 +451,9 @@ export default function App({ adapter }: { adapter?: StorageAdapter } = {}) {
   return (
     <DataProvider adapter={adapter}>
       <ToastProvider>
-        <Gate />
+        <ErrorBoundary scope="app">
+          <Gate />
+        </ErrorBoundary>
       </ToastProvider>
     </DataProvider>
   );

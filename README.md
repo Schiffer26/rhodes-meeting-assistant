@@ -208,10 +208,16 @@ The sidebar, top bar, keyboard flow, and transitions pick it up automatically.
 ```ts
 interface StorageAdapter {
   label: string;
-  load(): Promise<AppData>;
+  load(): Promise<LoadOutcome | AppData>;
+  loadSync?(): LoadOutcome | AppData | null;
   save(data: AppData): Promise<{ bytes: number }>;
   clear(): Promise<void>;
   usageInfo(): Promise<{ bytes: number; keys: number }>;
+  // optional — required only by operations that must preserve a copy first
+  readRaw?(): string | null;
+  snapshot?(raw: string, reason: string): { key: string } | { error: string };
+  snapshots?(): { key: string; bytes: number; createdAt: string; reason: string }[];
+  readSnapshot?(key: string): string | null;
 }
 ```
 
@@ -221,6 +227,26 @@ storage directly — everything flows through `useAppData()` in
 `hooks/store.tsx`, which debounces writes (280 ms) and drives the truthful
 SAVING… / SAVED / SAVE FAILED indicator shown in the top bar and the notes
 editor. JSON backup/restore and demo reset are store-level operations.
+
+### Data integrity (1.3.11 Phase 1)
+
+- **The loader never destroys anything.** A payload that cannot be parsed or
+  validated is copied to `rhodes.prototype.db.v1.snapshot.<stamp>.<reason>`,
+  left untouched under the live key, and the app opens on empty records with a
+  recovery screen. Demonstration data is only ever written by an explicit
+  choice on that screen.
+- **Validation is real.** `src/services/validation.ts` checks every record
+  (types, enums, ids, arrays/maps), repairs cosmetic gaps, reports records it
+  has to set aside, and stamps `meta.schemaVersion`. Version 1 payloads migrate
+  in memory; the new generation is written by the next normal save.
+- **A screen fault cannot blank the app.** `components/ErrorBoundary.tsx`
+  keeps the HUD and navigation alive and offers retry, download of the stored
+  records, and reload.
+- **Imports are safe.** `previewImport()` inspects a file read-only, the UI
+  demands an explicit confirmation that shows incoming vs current counts, and
+  `importJSON()` then validates → snapshots the live payload → writes → and
+  only then commits to React state. Any failure leaves the existing records
+  exactly as they were.
 
 > The configuration screen labels this adapter accurately as provisional:
 > it is *not* the final SQLite database.
