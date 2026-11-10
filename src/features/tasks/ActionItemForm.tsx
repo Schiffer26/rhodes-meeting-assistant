@@ -48,12 +48,23 @@ export function ActionItemFormModal({ taskId, open, onClose, defaultMeetingId }:
   const submit = () => {
     if (!title.trim()) { setErr("A task title is required."); return; }
     if (!meetingId) { setErr("Select the originating meeting."); return; }
+    // The agenda picker only offers items of the selected meeting; anything else
+    // would be an unreachable reference, so it is refused here and in the store.
+    if (agendaItemId && !agendaOptions.some((a) => a.id === agendaItemId)) {
+      setErr("That agenda item is not part of the selected meeting.");
+      return;
+    }
     const payload = {
       meetingId, agendaItemId: agendaItemId || null, title: title.trim(), description: description.trim(),
       assigneeId: assigneeId || null, dueDate, priority, status,
     };
-    if (editing) { updateActionItem(editing.id, payload); toast.success("Action item updated."); }
-    else { createActionItem(payload); toast.success("Action item registered."); }
+    const accepted = editing ? updateActionItem(editing.id, payload) : createActionItem(payload);
+    if (!accepted) {
+      // Keep the form and everything typed into it.
+      setErr("The task was not saved — the records are locked or the linked agenda item is no longer valid.");
+      return;
+    }
+    toast.success(editing ? "Action item updated." : "Action item registered.");
     onClose();
   };
 

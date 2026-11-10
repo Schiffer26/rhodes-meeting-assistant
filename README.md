@@ -397,6 +397,50 @@ write → commit.
   say so. Drafts for records that still exist are kept, and records that were
   already stored are never filtered by this check.
 
+#### Relationship integrity and agenda deletion (1.3.12 Phase 2)
+
+The records are a small graph — meetings own agenda items, notes, decisions and
+action items — so the store now checks the edges as well as the fields.
+
+- **One place for the rules.** `checkRelationships(data)` in
+  `services/validation.ts` walks every collection once and returns
+  `{ errors, warnings }`. `validateAppData()` folds it into the usual result
+  (`relationships`, `relationshipWarnings`), so `clean` is only true when the
+  references hold together too. **No field was added**; a missing optional link
+  is `null`, which is already what the model means by "not filed under an agenda
+  item".
+- **What blocks (errors):** the same id twice in `meetings`, `agendaItems`,
+  `personnel`, `notes`, `decisions` or `actionItems`; an agenda item, note,
+  decision or action item whose `meetingId` is not in the file; a decision or
+  action item whose `agendaItemId` is not in the file; and one whose agenda item
+  belongs to a *different* meeting (the model requires same-meeting); plus a
+  second discussion note for the same meeting.
+- **What only warns:** personnel references (`organizerId`, `presenterId`,
+  `approvedBy`, `assigneeId`, `attendeeIds`, `attendance` keys). The interface
+  already renders an unknown person as unassigned, so such a file is still
+  importable — the preview lists each one so nothing is silent.
+- **A relationship error refuses the whole file.** Nothing is dropped, repaired
+  or partially imported: the preview reports it before the confirmation, and the
+  import returns `Import refused — …; No records were changed.` The message names
+  the collection, the record and the reference, e.g. `decisions[0] "d_1".agendaItemId
+  points at agenda item "a_9", which belongs to meeting "m_b", not to its own
+  meeting "m_a"`. The Phase 1 order (validate → snapshot → write → commit) is
+  untouched, so a refused file never replaces the database and never spends a
+  recovery copy.
+- **Deleting an agenda item detaches, and says so.** Its decisions and action
+  items are kept, with `agendaItemId` set to `null` and every other field —
+  including `meetingId` — intact; only the link is cleared, so no dangling
+  reference can be stored. The confirmation warns beforehand and the success
+  toast reports the number detached (`DestructiveResult.detached`). The recovery
+  copy still holds the agenda entry *with* its links. An operation that cannot be
+  preserved is refused as before and changes nothing.
+- **Creating and editing check the same rule.** A decision or action item that
+  would point at a missing or another meeting's agenda item is refused at the
+  form and again in the store; the store returns `false`, the modal keeps its
+  input and shows the reason. Agenda-less decisions and tasks remain normal
+  (the field is optional), and a deferred edit queued during a deletion has its
+  stale link cleared on replay instead of being written dangling.
+
 > The configuration screen labels this adapter accurately as provisional:
 > it is *not* the final SQLite database.
 

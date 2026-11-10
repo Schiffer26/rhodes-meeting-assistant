@@ -51,11 +51,16 @@ export interface Store {
   // decisions
   /** `false` means the store refused the write (recovery lock) — say so, and keep the draft. */
   createDecision: (input: { meetingId: ID; title: string; description: string; agendaItemId: ID | null; approvedBy: ID | null; decisionDate: string; status: Decision["status"] }) => boolean;
-  updateDecision: (id: ID, patch: Partial<Decision>) => void;
+  /**
+   * `false` means nothing was written: the recovery lock refused it, the record
+   * is gone, or the agenda reference is not part of the record's own meeting.
+   */
+  updateDecision: (id: ID, patch: Partial<Decision>) => boolean;
   deleteDecision: (id: ID) => Promise<DestructiveResult>;
   // action items
   createActionItem: (input: { meetingId: ID; title: string; description: string; agendaItemId: ID | null; assigneeId: ID | null; dueDate: string; priority: Priority; status: TaskStatus }) => boolean;
-  updateActionItem: (id: ID, patch: Partial<ActionItem>) => void;
+  /** `false` under the same conditions as `updateDecision`. */
+  updateActionItem: (id: ID, patch: Partial<ActionItem>) => boolean;
   deleteActionItem: (id: ID) => Promise<DestructiveResult>;
   setActionStatus: (id: ID, status: TaskStatus) => void;
   // attendance
@@ -151,9 +156,34 @@ export interface DestructiveResult {
    * what happened instead of implying everything was kept.
    */
   dropped?: number;
+  /**
+   * Decisions and action items whose optional agenda link was cleared because
+   * the agenda entry they pointed at was removed. The records themselves are
+   * kept — only the link goes.
+   */
+  detached?: number;
 }
 
 const Ctx = createContext<Store | null>(null);
+
+/**
+ * Is an agenda reference usable inside `meetingId`?
+ *
+ * `null` means "not linked to an agenda item" and is always valid — most
+ * decisions and tasks have no agenda entry. A non-null reference must resolve
+ * to an agenda item of the *same* meeting: the interface only ever offers items
+ * from the record being edited, so anything else is a reference the operator
+ * could never have chosen and the workspace could never show.
+ */
+function agendaRefProblem(d: AppData, meetingId: ID, agendaItemId: ID | null): string | null {
+  if (!agendaItemId) return null;
+  const item = d.agendaItems.find((a) => a.id === agendaItemId);
+  if (!item) return "The linked agenda item no longer exists, so nothing was saved.";
+  if (item.meetingId !== meetingId) {
+    return "The linked agenda item belongs to a different meeting record, so nothing was saved.";
+  }
+  return null;
+}
 
 /**
  * Write-lock wording. Deliberately does not promise a download is enough: the
@@ -457,6 +487,20 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
 
     if (dropped > 0) {
       next = { ...next, agendaItems, decisions, actionItems, notes };
+    }
+
+    // An agenda link that became invalid while the operation ran — its agenda
+    // item was deleted, or now belongs to another meeting — is cleared instead
+    // of being replayed as a dangling reference. The decision or task itself is
+    // kept: it is a record with its own meeting, not a detail of the agenda.
+    const agendaOwner = new Map(next.agendaItems.map((a) => [a.id, a.meetingId] as const));
+    const linkValid = (meetingId: string, agendaItemId: string | null) =>
+      !agendaItemId || agendaOwner.get(agendaItemId) === meetingId;
+    if (next.decisions.some((x) => !linkValid(x.meetingId, x.agendaItemId))) {
+      next = { ...next, decisions: next.decisions.map((x) => (linkValid(x.meetingId, x.agendaItemId) ? x : { ...x, agendaItemId: null })) };
+    }
+    if (next.actionItems.some((t) => !linkValid(t.meetingId, t.agendaItemId))) {
+      next = { ...next, actionItems: next.actionItems.map((t) => (linkValid(t.meetingId, t.agendaItemId) ? t : { ...t, agendaItemId: null })) };
     }
 
     if (next === base) return dropped;
@@ -781,11 +825,31 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     mutate((d) => ({ ...d, agendaItems: d.agendaItems.map((a) => (a.id === id ? { ...a, ...patch } : a)) }));
   }, [mutate]);
 
-  const deleteAgendaItem = useCallback((id: ID) => runDestructive("pre-delete-agenda", (d) => (
-    d.agendaItems.some((a) => a.id === id)
-      ? { ...d, agendaItems: d.agendaItems.filter((a) => a.id !== id) }
-      : d
-  )), [runDestructive]);
+  /**
+   * Remove an agenda entry, keeping everything that referred to it.
+   *
+   * Decisions and action items are records in their own right: deleting the
+   * agenda line they were filed under must never delete them. Their optional
+   * `agendaItemId` is cleared instead, so nothing dangles and the meeting
+   * association (the required link) is untouched.
+   */
+  const deleteAgendaItem = useCallback((id: ID) => {
+    const current = dataRef.current;
+    const exists = !!current?.agendaItems.some((a) => a.id === id);
+    const linked = exists && current
+      ? current.decisions.filter((x) => x.agendaItemId === id).length +
+        current.actionItems.filter((t) => t.agendaItemId === id).length
+      : 0;
+    return runDestructive("pre-delete-agenda", (d) => {
+      if (!d.agendaItems.some((a) => a.id === id)) return d;
+      return {
+        ...d,
+        agendaItems: d.agendaItems.filter((a) => a.id !== id),
+        decisions: d.decisions.map((x) => (x.agendaItemId === id ? { ...x, agendaItemId: null } : x)),
+        actionItems: d.actionItems.map((t) => (t.agendaItemId === id ? { ...t, agendaItemId: null } : t)),
+      };
+    }).then((res) => (res.ok ? { ...res, detached: linked } : res));
+  }, [runDestructive]);
 
   const moveAgendaItem = useCallback((meetingId: ID, id: ID, dir: -1 | 1) => {
     mutate((d) => {
@@ -854,11 +918,28 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
 
   // ── Decisions ───────────────────────────────────────────────
   const createDecision = useCallback<Store["createDecision"]>((input) => {
+    const current = dataRef.current;
+    // A reference the workspace could never show is refused, not stored.
+    if (!current || agendaRefProblem(current, input.meetingId, input.agendaItemId)) return false;
     const result = mutate((d) => ({ ...d, decisions: [...d.decisions, { ...input, id: uid("d") }] }));
     return result.ok === true;
   }, [mutate]);
-  const updateDecision = useCallback((id: ID, patch: Partial<Decision>) => {
-    mutate((d) => ({ ...d, decisions: d.decisions.map((x) => (x.id === id ? { ...x, ...patch } : x)) }));
+  const updateDecision = useCallback((id: ID, patch: Partial<Decision>): boolean => {
+    const current = dataRef.current;
+    const existing = current?.decisions.find((x) => x.id === id);
+    if (!current || !existing) return false;
+    const meetingId = patch.meetingId ?? existing.meetingId;
+    const agendaItemId = patch.agendaItemId !== undefined ? patch.agendaItemId : existing.agendaItemId;
+    const touchesLink = patch.agendaItemId !== undefined || patch.meetingId !== undefined;
+    if (touchesLink && agendaRefProblem(current, meetingId, agendaItemId)) return false;
+    // A record stored before these checks existed can carry an unusable link.
+    // Editing its status or text must not fail because of it, and must not
+    // preserve it either: the edit repairs the link.
+    const repair: Partial<Decision> = !touchesLink && agendaItemId && agendaRefProblem(current, meetingId, agendaItemId)
+      ? { agendaItemId: null }
+      : {};
+    const result = mutate((d) => ({ ...d, decisions: d.decisions.map((x) => (x.id === id ? { ...x, ...patch, ...repair } : x)) }));
+    return result.ok === true;
   }, [mutate]);
   const deleteDecision = useCallback((id: ID) => runDestructive("pre-delete-decision", (d) => (
     d.decisions.some((x) => x.id === id)
@@ -868,12 +949,27 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
 
   // ── Action items ────────────────────────────────────────────
   const createActionItem = useCallback<Store["createActionItem"]>((input) => {
+    const current = dataRef.current;
+    if (!current || agendaRefProblem(current, input.meetingId, input.agendaItemId)) return false;
     const nowIso = new Date().toISOString();
     const result = mutate((d) => ({ ...d, actionItems: [...d.actionItems, { ...input, id: uid("t"), createdAt: nowIso, updatedAt: nowIso }] }));
     return result.ok === true;
   }, [mutate]);
-  const updateActionItem = useCallback((id: ID, patch: Partial<ActionItem>) => {
-    mutate((d) => ({ ...d, actionItems: d.actionItems.map((t) => (t.id === id ? { ...t, ...patch, updatedAt: new Date().toISOString() } : t)) }));
+  const updateActionItem = useCallback((id: ID, patch: Partial<ActionItem>): boolean => {
+    const current = dataRef.current;
+    const existing = current?.actionItems.find((t) => t.id === id);
+    if (!current || !existing) return false;
+    const meetingId = patch.meetingId ?? existing.meetingId;
+    const agendaItemId = patch.agendaItemId !== undefined ? patch.agendaItemId : existing.agendaItemId;
+    const touchesLink = patch.agendaItemId !== undefined || patch.meetingId !== undefined;
+    if (touchesLink && agendaRefProblem(current, meetingId, agendaItemId)) return false;
+    // Same rule as decisions: an edit of an unrelated field is allowed and
+    // repairs a link that was already unusable.
+    const repair: Partial<ActionItem> = !touchesLink && agendaItemId && agendaRefProblem(current, meetingId, agendaItemId)
+      ? { agendaItemId: null }
+      : {};
+    const result = mutate((d) => ({ ...d, actionItems: d.actionItems.map((t) => (t.id === id ? { ...t, ...patch, ...repair, updatedAt: new Date().toISOString() } : t)) }));
+    return result.ok === true;
   }, [mutate]);
   const deleteActionItem = useCallback((id: ID) => runDestructive("pre-delete-task", (d) => (
     d.actionItems.some((t) => t.id === id)
@@ -982,7 +1078,14 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
         error: `Import refused — ${importRejectionReason(result)}. No records were changed.`,
       };
     }
-    return { ok: true, counts: result.counts, current: countOf(data), warnings: result.repaired };
+    return {
+      ok: true,
+      counts: result.counts,
+      current: countOf(data),
+      // Repairs are cosmetic; relationship warnings are people the file mentions
+      // but does not contain. Neither blocks the import.
+      warnings: [...result.repaired, ...result.relationshipWarnings],
+    };
   }, [data]);
 
   /**

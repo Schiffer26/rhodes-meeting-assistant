@@ -200,14 +200,24 @@ export function AgendaPanel({ meeting }: { meeting: Meeting }) {
       </Modal>
 
       <ConfirmDialog open={!!confirmDel} onCancel={() => setConfirmDel(null)} title="Remove Agenda Item"
-        message={<>Remove <b style={{ color: "var(--text)" }}>“{confirmDel?.title}”</b> from the agenda? A recovery copy of the current records is written first.</>} confirmLabel="Remove"
+        message={<>
+          Remove <b style={{ color: "var(--text)" }}>“{confirmDel?.title}”</b> from the agenda? A recovery copy of the current records is written first.
+          Decisions and action items filed under it are kept and detached from it.
+        </>} confirmLabel="Remove"
         onConfirm={() => {
           const target = confirmDel;
           setConfirmDel(null);
           if (!target) return;
           void deleteAgendaItem(target.id).then((res) => {
-            if (res.ok) toast.success("Agenda entry removed. A recovery copy was preserved.");
-            else toast.error(res.error ?? "The agenda entry could not be removed.");
+            if (res.ok) {
+              const detached = res.detached ?? 0;
+              toast.success(
+                "Agenda entry removed. A recovery copy was preserved." +
+                (detached
+                  ? ` ${detached} linked ${detached === 1 ? "record was" : "records were"} kept and detached from it.`
+                  : ""),
+              );
+            } else toast.error(res.error ?? "The agenda entry could not be removed.");
           });
         }} />
     </div>
@@ -402,9 +412,20 @@ export function DecisionsPanel({ meeting }: { meeting: Meeting }) {
           <Button onClick={() => setForm(null)}>Cancel</Button>
           <Button variant="primary" onClick={() => {
             if (!f.title.trim()) { toast.error("Decision title is required."); return; }
+            // The picker only lists this record's agenda, so anything else came
+            // from outside the interface and is refused rather than stored.
+            if (f.agendaItemId && !agenda.some((a) => a.id === f.agendaItemId)) {
+              toast.error("That agenda item is not part of this meeting record. Choose another, or none.");
+              return;
+            }
             const payload = { meetingId: meeting.id, title: f.title.trim(), description: f.description.trim(), agendaItemId: f.agendaItemId || null, approvedBy: f.approvedBy || null, decisionDate: f.decisionDate, status: f.status };
-            if (editing) { updateDecision(editing.id, payload); toast.success("Decision updated."); }
-            else { createDecision(payload); toast.success("Decision recorded."); }
+            const accepted = editing ? updateDecision(editing.id, payload) : createDecision(payload);
+            if (!accepted) {
+              // Nothing was written: keep the form and its input for a retry.
+              toast.error("The decision was not saved — the records are locked or the linked agenda item is no longer valid.");
+              return;
+            }
+            toast.success(editing ? "Decision updated." : "Decision recorded.");
             setForm(null);
           }}>{editing ? "Save Changes" : "Record"}</Button>
         </>}>

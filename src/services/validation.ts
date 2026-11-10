@@ -51,12 +51,22 @@ export const REQUIRED_COLLECTIONS = [
 export interface ValidationResult {
   /** No fatal problem: `data` is present and safe to render. */
   usable: boolean;
-  /** Nothing dropped, nothing structural: safe to import over live records. */
+  /** Nothing dropped, nothing structural, no broken relationship: safe to import. */
   clean: boolean;
   fatal: string[];
   structural: string[];
   dropped: string[];
   repaired: string[];
+  /**
+   * Broken cross-record relationships (duplicate ids, a record pointing at a
+   * meeting or agenda item that is not in the payload, an agenda item from
+   * another meeting). Fatal to an *import*; the loader still opens the records,
+   * because stored data that is already in that state must never be locked away
+   * from its owner.
+   */
+  relationships: string[];
+  /** Personnel references that cannot be resolved. Reported, never blocking. */
+  relationshipWarnings: string[];
   migratedFrom: number | null;
   counts: Record<string, number>;
   data: AppData | null;
@@ -316,6 +326,112 @@ function countRecords(data: AppData): Record<string, number> {
 }
 
 /**
+ * Cross-record relationship check.
+ *
+ * The data model keeps its relationships as ids and nothing in the type system
+ * says a reference resolves. This function is the one place that decides
+ * whether a record set is *coherent*: every id unique, every child pointing at
+ * a parent that exists, and every agenda reference inside the same meeting
+ * (the interface only ever offers agenda items from the record being edited).
+ *
+ * Errors block an import. Personnel references are warnings: a person can be
+ * absent from a backup while the meeting, decision or task that mentions them
+ * is still perfectly usable — the interface renders such a reference as
+ * "unassigned". `deletePerson()` already clears them, so they only appear in
+ * files assembled outside RHODES.
+ */
+export interface RelationshipReport {
+  errors: string[];
+  warnings: string[];
+}
+
+export function checkRelationships(data: AppData): RelationshipReport {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+
+  /** Index one collection, reporting every repeat of an id. */
+  const indexIds = (collection: string, records: { id: string }[]): Map<string, number> => {
+    const first = new Map<string, number>();
+    records.forEach((record, i) => {
+      const seen = first.get(record.id);
+      if (seen === undefined) first.set(record.id, i);
+      else errors.push(`${collection}[${i}] repeats the id "${record.id}" already used by ${collection}[${seen}]`);
+    });
+    return first;
+  };
+
+  const meetingAt = indexIds("meetings", data.meetings);
+  const agendaAt = indexIds("agendaItems", data.agendaItems);
+  indexIds("personnel", data.personnel);
+  indexIds("notes", data.notes);
+  indexIds("decisions", data.decisions);
+  indexIds("actionItems", data.actionItems);
+
+  const personIds = new Set(data.personnel.map((p) => p.id));
+  const agendaMeeting = new Map(data.agendaItems.map((a) => [a.id, a.meetingId] as const));
+
+  const meetingRef = (collection: string, i: number, id: string, meetingId: string): boolean => {
+    if (meetingAt.has(meetingId)) return true;
+    errors.push(`${collection}[${i}] "${id}" belongs to meeting "${meetingId}", which is not in this file`);
+    return false;
+  };
+
+  const agendaRef = (collection: string, i: number, id: string, meetingId: string, agendaItemId: string | null): void => {
+    if (!agendaItemId) return;
+    if (!agendaAt.has(agendaItemId)) {
+      errors.push(`${collection}[${i}] "${id}".agendaItemId points at agenda item "${agendaItemId}", which is not in this file`);
+      return;
+    }
+    const owner = agendaMeeting.get(agendaItemId);
+    if (owner !== meetingId) {
+      errors.push(
+        `${collection}[${i}] "${id}".agendaItemId points at agenda item "${agendaItemId}", which belongs to meeting "${owner}", not to its own meeting "${meetingId}"`,
+      );
+    }
+  };
+
+  const personRef = (collection: string, i: number, id: string, field: string, personId: string | null): void => {
+    if (!personId || personIds.has(personId)) return;
+    warnings.push(`${collection}[${i}] "${id}".${field} refers to personnel "${personId}", who is not in this file`);
+  };
+
+  data.meetings.forEach((m, i) => {
+    personRef("meetings", i, m.id, "organizerId", m.organizerId);
+    m.attendeeIds.forEach((personId) => personRef("meetings", i, m.id, "attendeeIds", personId));
+    Object.keys(m.attendance).forEach((personId) => personRef("meetings", i, m.id, "attendance", personId));
+  });
+
+  data.agendaItems.forEach((a, i) => {
+    meetingRef("agendaItems", i, a.id, a.meetingId);
+    personRef("agendaItems", i, a.id, "presenterId", a.presenterId);
+  });
+
+  // The discussion log holds one note per meeting: a second one could never be
+  // shown or edited, so an import carrying two would add an unreachable record.
+  const noteAt = new Map<string, number>();
+  data.notes.forEach((n, i) => {
+    const seen = noteAt.get(n.meetingId);
+    if (seen === undefined) noteAt.set(n.meetingId, i);
+    else errors.push(`notes[${i}] "${n.id}" repeats the discussion note for meeting "${n.meetingId}" already held by notes[${seen}]`);
+    meetingRef("notes", i, n.id, n.meetingId);
+  });
+
+  data.decisions.forEach((d, i) => {
+    const meetingOk = meetingRef("decisions", i, d.id, d.meetingId);
+    personRef("decisions", i, d.id, "approvedBy", d.approvedBy);
+    if (meetingOk) agendaRef("decisions", i, d.id, d.meetingId, d.agendaItemId);
+  });
+
+  data.actionItems.forEach((t, i) => {
+    const meetingOk = meetingRef("actionItems", i, t.id, t.meetingId);
+    personRef("actionItems", i, t.id, "assigneeId", t.assigneeId);
+    if (meetingOk) agendaRef("actionItems", i, t.id, t.meetingId, t.agendaItemId);
+  });
+
+  return { errors, warnings };
+}
+
+/**
  * Validate a payload against the RHODES schema and migrate it to the current
  * generation in memory. Never writes, never mutates the input.
  */
@@ -327,17 +443,24 @@ export function validateAppData(payload: unknown): ValidationResult {
   const report: Report = { structural };
   let migratedFrom: number | null = null;
 
-  const finish = (data: AppData | null): ValidationResult => ({
-    usable: fatal.length === 0 && data !== null,
-    clean: fatal.length === 0 && structural.length === 0 && dropped.length === 0 && data !== null,
-    fatal,
-    structural,
-    dropped,
-    repaired,
-    migratedFrom,
-    counts: data ? countRecords(data) : { meetings: 0, agendaItems: 0, personnel: 0, notes: 0, decisions: 0, actionItems: 0, total: 0 },
-    data,
-  });
+  const finish = (data: AppData | null): ValidationResult => {
+    const rel = data ? checkRelationships(data) : { errors: [], warnings: [] };
+    return {
+      usable: fatal.length === 0 && data !== null,
+      clean:
+        fatal.length === 0 && structural.length === 0 && dropped.length === 0 &&
+        rel.errors.length === 0 && data !== null,
+      fatal,
+      structural,
+      dropped,
+      repaired,
+      relationships: rel.errors,
+      relationshipWarnings: rel.warnings,
+      migratedFrom,
+      counts: data ? countRecords(data) : { meetings: 0, agendaItems: 0, personnel: 0, notes: 0, decisions: 0, actionItems: 0, total: 0 },
+      data,
+    };
+  };
 
   if (!isRecord(payload)) {
     fatal.push("The payload is not a RHODES data object.");
@@ -472,7 +595,7 @@ export function summarise(problems: string[], limit = 3): string {
 /** Why an import cannot be applied — empty when the file is acceptable. */
 export function importRejectionReason(result: ValidationResult): string {
   if (result.usable && result.clean) return "";
-  const problems = [...result.fatal, ...result.structural, ...result.dropped];
+  const problems = [...result.fatal, ...result.structural, ...result.dropped, ...result.relationships];
   if (!problems.length) return "File does not match the RHODES data schema.";
   return problems.slice(0, 4).join(" · ");
 }
