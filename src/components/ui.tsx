@@ -7,6 +7,7 @@
 // modal scrim, never for content panels.
 // ─────────────────────────────────────────────────────────────
 import React from "react";
+import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import { Loader2, X } from "lucide-react";
 import { useMotionScale } from "@/hooks/store";
@@ -251,7 +252,18 @@ export function Modal({ open, onClose, title, code, width = 620, children, foote
     return () => window.removeEventListener("keydown", h);
   }, [open, onClose]);
 
-  return (
+  // The overlay is portalled to <body> so page-level stacking contexts can
+  // never trap it: `.page-canvas` (isolation: isolate) and the page transition
+  // wrapper sit inside #root together with the HUD, the environment artwork and
+  // the workspace status strip, and a backdrop rendered among them would be
+  // painted under whichever sibling happens to come later in DOM order (that
+  // is how the status strip used to land on top of a Personnel File footer).
+  // Mounted on <body>, `.modal-backdrop` (z-index 90) sits above every normal
+  // interface layer (#root content, HUD, artwork, status strip) and still
+  // below the boot overlay (200), the toast stack (300) and the skip link.
+  // AnimatePresence stays mounted here, so open/exit animations and the
+  // backdrop, Escape and outside-click dismissal keep working unchanged.
+  const overlay = (
     <AnimatePresence>
       {open && (
         <motion.div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={title}
@@ -277,6 +289,9 @@ export function Modal({ open, onClose, title, code, width = 620, children, foote
       )}
     </AnimatePresence>
   );
+
+  if (typeof document === "undefined") return null;
+  return createPortal(overlay, document.body);
 }
 
 export function ConfirmDialog({ open, onCancel, onConfirm, title, message, confirmLabel = "Confirm" }: {
