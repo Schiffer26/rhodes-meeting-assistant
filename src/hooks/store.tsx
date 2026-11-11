@@ -71,6 +71,27 @@ export interface Store {
   updateSettings: (patch: Partial<AppSettings>) => void;
   /** Force a write now. Resolves with the outcome so callers cannot claim success falsely. */
   flush: () => Promise<{ ok: boolean; error?: string }>;
+  /**
+   * Register an editor that holds text which has not reached the store yet.
+   *
+   * The callback must hand its draft over *synchronously* and return `false`
+   * when the draft is still unsaved (the store refused it, or it is still held
+   * in the editor). `flushSynchronously` calls every registered callback before
+   * it reads the document, so the page can be torn down in the knowledge that
+   * the last keystrokes are either stored or reported as unsaved.
+   */
+  registerUnloadFlush: (flushDraft: () => boolean) => () => void;
+  /**
+   * Write the records that are already in memory *now*, without waiting for a
+   * promise. Used by the page-lifecycle path (`pagehide`, `beforeunload`,
+   * `visibilitychange`) where a queued write has no guarantee of running.
+   *
+   * `ok: false` means nothing was written — the recovery lock is active, an
+   * exclusive operation owns the document, or the adapter cannot write
+   * synchronously. `pending` says whether unsaved edits were at stake, which is
+   * what decides the warning before leaving.
+   */
+  flushSynchronously: () => { ok: boolean; error?: string; pending: boolean };
   exportJSON: () => string;
   /** Read-only inspection of a backup file: nothing is written or replaced. */
   previewImport: (json: string) => ImportPreview;
@@ -295,6 +316,20 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
   /** Document waiting for its debounce to elapse (kept so it can be retried). */
   const pendingDoc = useRef<AppData | null>(null);
   /**
+   * Ordering for debounced writes.
+   *
+   * `docSeq` counts committed documents; `persistedSeq` is the newest sequence
+   * known to be on disk. A queued write that carries an older sequence is
+   * skipped instead of being allowed to put stale bytes back over a newer
+   * document (which is exactly what a lifecycle flush can cause: it writes the
+   * current document while an older one is still waiting in the queue).
+   */
+  const docSeq = useRef(0);
+  /** The loaded document is already in storage, so sequence 0 is persisted. */
+  const persistedSeq = useRef(0);
+  /** Editors that may still hold text which has not reached the store. */
+  const unloadFlushers = useRef<Set<() => boolean>>(new Set());
+  /**
    * Non-null while an exclusive operation (delete / reset / import / demo)
    * owns the document. Exclusive operations never overlap each other.
    */
@@ -376,10 +411,37 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
    * move the save indicator: an older save that resolves late cannot report
    * "saved" over a newer one.
    */
-  const writeDocument = useCallback((doc: AppData): Promise<{ bytes: number }> => {
+  const writeDocument = useCallback((doc: AppData, seq?: number): Promise<{ bytes: number }> => {
     const op = ++opCount.current;
-    return enqueueWrite(() => source.save(doc)).then(
+    const ordered = seq !== undefined;
+    // The sequence this document carries. Unordered writes are an exclusive
+    // operation's own document, so they mark the sequence current at enqueue.
+    const mark = seq ?? docSeq.current;
+    return enqueueWrite(async () => {
+      // An ordered (debounced) write is dropped when a newer document already
+      // reached storage. Writes issued by an exclusive operation carry no
+      // sequence: they are the operation's own document and are never skipped.
+      if (ordered && (seq as number) < persistedSeq.current) {
+        return { bytes: 0 };
+      }
+      const result = await source.save(doc);
+      // The document went stale *while* the write was in flight — a lifecycle
+      // flush overtook it. A synchronous store cannot reach this point; an
+      // asynchronous one has already put the older bytes down, so write the
+      // newest document back over them once. Never the other way round: an
+      // older queued write must not be the last writer.
+      if (ordered && (seq as number) < persistedSeq.current) {
+        const latest = dataRef.current;
+        if (latest && latest !== doc) {
+          const corrected = await source.save(latest);
+          persistedSeq.current = Math.max(persistedSeq.current, docSeq.current);
+          return corrected;
+        }
+      }
+      return result;
+    }).then(
       (result) => {
+        persistedSeq.current = Math.max(persistedSeq.current, mark);
         if (opCount.current === op) setSaveState("saved");
         return result;
       },
@@ -416,6 +478,7 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
   const scheduleWrite = useCallback((doc: AppData) => {
     if (writesBlockedRef.current) return;
     pendingDoc.current = doc;
+    const seq = docSeq.current;
     setSaveState("saving");
     if (persistTimer.current) window.clearTimeout(persistTimer.current);
     persistTimer.current = window.setTimeout(() => {
@@ -425,7 +488,7 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
       const queued = pendingDoc.current;
       pendingDoc.current = null;
       if (!queued) return;
-      void writeDocument(queued).catch(() => undefined);
+      void writeDocument(queued, seq).catch(() => undefined);
     }, 280);
   }, [writeDocument]);
 
@@ -516,6 +579,7 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
 
     if (next === base) return dropped;
     dataRef.current = next;
+    docSeq.current += 1;
     setData(next);
     persist(next);
     return dropped;
@@ -544,6 +608,7 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     const next = fn(prev);
     if (next === prev) return { ok: true };   // nothing changed — no write, no render
     dataRef.current = next;
+    docSeq.current += 1;
     setData(next);
     persist(next);
     return { ok: true };
@@ -756,6 +821,7 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
         };
       }
 
+      docSeq.current += 1;
       dataRef.current = next;
       setData(next);
       // Replay now, so the caller can report any draft whose record was removed.
@@ -1024,6 +1090,7 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
 
   const flush = useCallback(async (): Promise<{ ok: boolean; error?: string }> => {
     const current = dataRef.current;
+    const seq = docSeq.current;
     if (!current) return { ok: false, error: "No records are loaded." };
     if (writesBlockedRef.current) {
       return {
@@ -1041,7 +1108,7 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     pendingDoc.current = null;
     setSaveState("saving");
     try {
-      await writeDocument(current);
+      await writeDocument(current, seq);
       return { ok: true };
     } catch (error) {
       // Keep the document on the queue so a retry — or the next edit — cannot
@@ -1053,6 +1120,123 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
       };
     }
   }, [writeDocument, scheduleWrite]);
+
+  const registerUnloadFlush = useCallback((flushDraft: () => boolean) => {
+    unloadFlushers.current.add(flushDraft);
+    return () => { unloadFlushers.current.delete(flushDraft); };
+  }, []);
+
+  /**
+   * Write the in-memory records synchronously, for use *inside* a lifecycle
+   * event (`pagehide`, `beforeunload`, `visibilitychange`).
+   *
+   * Everything here has to finish before the handler returns: after the
+   * document is torn down, neither a timer nor a promise is guaranteed to run.
+   * The same refusals as `flush()` apply — a blocked write lock or an exclusive
+   * operation is respected, and the caller is told nothing was written rather
+   * than being told the records are safe.
+   */
+  const flushSynchronously = useCallback((): { ok: boolean; error?: string; pending: boolean } => {
+    // 1 · Let every editor put its unsaved text into the store first. This runs
+    // on every call, whatever the lock state: a refused draft has to stay in
+    // the editor (and be reported), not vanish because the page is leaving.
+    let draftRefused = false;
+    for (const flushDraft of Array.from(unloadFlushers.current)) {
+      try {
+        if (flushDraft() === false) draftRefused = true;
+      } catch {
+        draftRefused = true;
+      }
+    }
+
+    // 2 · Write what is now in memory. Everything below is synchronous by
+    // design: after `pagehide` a promise or a timer may never run again.
+    const current = dataRef.current;
+    if (!current) return { ok: false, error: "No records are loaded.", pending: draftRefused };
+    const queued = persistTimer.current !== null || pendingDoc.current !== null;
+    const unsaved = queued || docSeq.current > persistedSeq.current;
+    const pending = unsaved || draftRefused;
+
+    if (writesBlockedRef.current) {
+      // The write lock is not a lifecycle exception: the operator's records are
+      // unsafe on purpose until they confirm a preserved copy.
+      return { ok: false, error: BLOCKED_WRITE_MESSAGE, pending };
+    }
+    if (exclusiveRef.current) {
+      // An exclusive operation owns the document; edits made now are deferred
+      // to it and would be lost with the page, so this is always at risk.
+      return { ok: false, error: BUSY_MESSAGE, pending: true };
+    }
+    if (!unsaved && !draftRefused) return { ok: true, pending: false };   // nothing to write
+    if (!source.saveSync) {
+      return {
+        ok: false,
+        error: "This storage backend cannot write synchronously, so the last few hundred milliseconds of edits could not be written.",
+        pending,
+      };
+    }
+
+    // The document in memory is the newest state; the queued one is redundant.
+    if (persistTimer.current) {
+      window.clearTimeout(persistTimer.current);
+      persistTimer.current = null;
+    }
+    pendingDoc.current = null;
+    const seq = docSeq.current;
+    try {
+      source.saveSync(current);
+      persistedSeq.current = Math.max(persistedSeq.current, seq);
+      opCount.current += 1;      // an older in-flight write must not report over this
+      setSaveState("saved");
+    } catch (error) {
+      // Keep the document queued so a surviving page still retries it, and let
+      // the indicator settle on "error" instead of a false "saved".
+      scheduleWrite(current);
+      return { ok: false, error: failureText(error), pending: true };
+    }
+    // A refused draft can only happen while writes are blocked, and that case
+    // has already returned above — so reaching here means everything is down.
+    return { ok: true, pending: false };
+  }, [scheduleWrite, source]);
+
+  /**
+   * Lifecycle safety net for the debounce windows.
+   *
+   * The editor's own 800 ms timer and the store's 280 ms timer are what stand
+   * between the operator's text and storage; neither is guaranteed to fire
+   * before the page is gone. On every "this document may be leaving" event we
+   * (1) hand the editors' drafts to the store synchronously, then (2) write the
+   * document synchronously. If that write is refused, `beforeunload` is
+   * cancelled so the browser asks the operator instead of silently dropping
+   * their work.
+   */
+  useEffect(() => {
+    if (!ready) return;
+    const flushForLifecycle = (event?: BeforeUnloadEvent) => {
+      // `flushSynchronously` itself runs the editors' draft hand-over first, so
+      // the document it writes already contains their text.
+      const result = flushSynchronously();
+      // Only warn when something really is at stake and could not be written.
+      if (!result.ok && result.pending && event && event.type === "beforeunload" && event.cancelable) {
+        event.preventDefault();
+        event.returnValue = "";
+      }
+      return result;
+    };
+    const onPageHide = () => { flushForLifecycle(); };
+    const onBeforeUnload = (event: BeforeUnloadEvent) => { flushForLifecycle(event); };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") flushForLifecycle();
+    };
+    window.addEventListener("pagehide", onPageHide);
+    window.addEventListener("beforeunload", onBeforeUnload);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("pagehide", onPageHide);
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [ready, flushSynchronously]);
 
   const exportJSON = useCallback((): string => JSON.stringify(data, null, 2), [data]);
 
@@ -1153,6 +1337,7 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
       }
 
       // 3 · commit
+      docSeq.current += 1;
       dataRef.current = result.data;
       setData(result.data);
       // Replay now, so the caller can report any draft that has no record left.
@@ -1238,6 +1423,7 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
           error: `The demonstration dataset could not be written (${failureText(error)}). Nothing was changed.`,
         };
       }
+      docSeq.current += 1;
       dataRef.current = seed;
       setData(seed);
       setRecovery(null);
@@ -1304,7 +1490,7 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     createDecision, updateDecision, deleteDecision,
     createActionItem, updateActionItem, deleteActionItem, setActionStatus,
     addAttendee, removeAttendee, setAttendance,
-    updateSettings, flush, exportJSON, previewImport, importJSON, resetToDemo, restoreDefaultSettings,
+    updateSettings, flush, flushSynchronously, registerUnloadFlush, exportJSON, previewImport, importJSON, resetToDemo, restoreDefaultSettings,
     dismissRecovery, startWithDemoData,
   }), [
     ready, data, saveState, recovery, previewImport, dismissRecovery, startWithDemoData,
@@ -1315,7 +1501,7 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     createDecision, updateDecision, deleteDecision,
     createActionItem, updateActionItem, deleteActionItem, setActionStatus,
     addAttendee, removeAttendee, setAttendance,
-    updateSettings, flush, exportJSON, importJSON, resetToDemo, restoreDefaultSettings,
+    updateSettings, flush, flushSynchronously, registerUnloadFlush, exportJSON, importJSON, resetToDemo, restoreDefaultSettings,
   ]);
 
   // Children always render: `Gate` owns the loading decision and shows the

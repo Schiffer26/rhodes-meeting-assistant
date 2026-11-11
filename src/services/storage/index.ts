@@ -70,6 +70,17 @@ export interface StorageAdapter {
    */
   loadSync?(): LoadOutcome | AppData | null;
   save(data: AppData): Promise<{ bytes: number }>;
+  /**
+   * Optional *synchronous* write, used only by the page-lifecycle path.
+   *
+   * After `pagehide` there is no guarantee that a promise will ever settle, so
+   * the last few hundred milliseconds of edits cannot be flushed through the
+   * asynchronous queue. A synchronous store (localStorage today, an IPC call in
+   * Electron) can still be written inside the event handler; adapters that
+   * cannot write synchronously omit this, and the lifecycle path reports that
+   * honestly instead of claiming the records were saved.
+   */
+  saveSync?(data: AppData): { bytes: number };
   clear(): Promise<void>;
   usageInfo(): Promise<{ bytes: number; keys: number }>;
 
@@ -323,6 +334,17 @@ export class LocalStorageAdapter implements StorageAdapter {
   }
 
   async save(data: AppData): Promise<{ bytes: number }> {
+    return this.saveSync(data);
+  }
+
+  /**
+   * The same write without the promise.
+   *
+   * `localStorage.setItem` is synchronous, so reaching it through a promise
+   * chain adds no safety — it only adds a microtask the browser is free to drop
+   * when the document is going away. The lifecycle flush calls this directly.
+   */
+  saveSync(data: AppData): { bytes: number } {
     const raw = JSON.stringify(data);
     window.localStorage.setItem(STORAGE_KEY, raw);
     return { bytes: bytesOf(raw) };

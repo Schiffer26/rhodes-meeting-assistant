@@ -233,7 +233,7 @@ export function AgendaPanel({ meeting }: { meeting: Meeting }) {
 const unsavedDrafts = new Map<string, string>();
 
 export function NotesPanel({ meeting }: { meeting: Meeting }) {
-  const { data, saveNote, saveState, flush } = useAppData();
+  const { data, saveNote, saveState, flush, registerUnloadFlush } = useAppData();
   const toast = useToast();
   const note = data.notes.find((n) => n.meetingId === meeting.id);
   const ref = useRef<HTMLDivElement>(null);
@@ -286,7 +286,24 @@ export function NotesPanel({ meeting }: { meeting: Meeting }) {
     timer.current = window.setTimeout(() => doSave(html), 800);
   }, [doSave]);
 
-  // flush pending content on unmount or on global save shortcut
+  /**
+   * The page may be going away (pagehide / beforeunload / tab hidden).
+   *
+   * Hand the text to the store *synchronously* and leave the writing to the
+   * store's own lifecycle flush: no `flush()` here, because it returns a promise
+   * the browser is free to drop and raises a toast nobody will see. `false`
+   * tells the store the draft is still unsaved, so the operator is warned
+   * instead of losing text quietly.
+   */
+  useEffect(() => registerUnloadFlush(() => {
+    if (pending.current == null) return true;
+    if (timer.current) window.clearTimeout(timer.current);
+    timer.current = null;
+    doSave(pending.current);
+    return pending.current == null;
+  }), [doSave, registerUnloadFlush]);
+
+  // flush pending content on unmount or on the global save shortcut
   useEffect(() => {
     const onFlush = () => {
       if (pending.current != null) { if (timer.current) window.clearTimeout(timer.current); doSave(pending.current); flush(); }
