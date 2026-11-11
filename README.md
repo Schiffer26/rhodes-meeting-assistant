@@ -418,7 +418,9 @@ action items — so the store now checks the edges as well as the fields.
 - **What only warns:** personnel references (`organizerId`, `presenterId`,
   `approvedBy`, `assigneeId`, `attendeeIds`, `attendance` keys). The interface
   already renders an unknown person as unassigned, so such a file is still
-  importable — the preview lists each one so nothing is silent.
+  importable — the *Replace All Records* dialog lists every warning verbatim
+  above the recovery-copy note, says the file will still import, and says the
+  missing person will show as **Unassigned**. No warnings, no section.
 - **A relationship error refuses the whole file.** Nothing is dropped, repaired
   or partially imported: the preview reports it before the confirmation, and the
   import returns `Import refused — …; No records were changed.` The message names

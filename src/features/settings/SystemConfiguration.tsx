@@ -267,6 +267,28 @@ export function SystemConfiguration() {
                 This file contains no records. Confirming will leave the registry empty.
               </div>
             )}
+            {!!pending.preview.warnings?.length && (
+              // Non-blocking findings from the same check that would refuse a
+              // broken file — today, references to people the file does not
+              // contain. Shown verbatim, and only when there is something to say.
+              <section style={{ marginTop: 10 }} aria-label="Import warnings">
+                <div className="small" style={{ color: "var(--warn)", fontWeight: 600 }}>
+                  Import warnings — {pending.preview.warnings.length}{" "}
+                  {pending.preview.warnings.length === 1 ? "reference" : "references"} could not be resolved
+                </div>
+                {/* Tailwind's reset drops list markers; they carry the reading here. */}
+                <ul className="small dim-2" style={{ margin: "4px 0 0", paddingLeft: 16, listStyle: "disc" }}>
+                  {pending.preview.warnings.map((w, i) => (
+                    <li key={`${i}-${w}`} style={{ marginTop: 2 }}>{w}</li>
+                  ))}
+                </ul>
+                <div className="small dim-2" style={{ marginTop: 6 }}>
+                  These warnings do not block the import. A missing person is not a broken record: the
+                  affected meeting, decision or task still imports, and the person appears as <b>Unassigned</b>{" "}
+                  until you add them to the registry.
+                </div>
+              </section>
+            )}
             <div className="small dim-2" style={{ marginTop: 10 }}>
               A recovery snapshot of the current records is written before anything is replaced, and the
               new records are only applied once they have been written successfully.
