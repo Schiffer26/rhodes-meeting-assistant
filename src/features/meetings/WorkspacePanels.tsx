@@ -295,8 +295,12 @@ export function NotesPanel({ meeting }: { meeting: Meeting }) {
    * tells the store the draft is still unsaved, so the operator is warned
    * instead of losing text quietly.
    */
-  useEffect(() => registerUnloadFlush(() => {
+  useEffect(() => registerUnloadFlush((commit) => {
     if (pending.current == null) return true;
+    // `commit === false` is a query: the store only wants to know whether text is
+    // held here (it is), without taking it out of the editor. Used when the page
+    // must not be written — a read-only window, or one whose copy is stale.
+    if (!commit) return false;
     if (timer.current) window.clearTimeout(timer.current);
     timer.current = null;
     doSave(pending.current);
@@ -716,7 +720,7 @@ export function QuickCaptureRail({ meeting }: { meeting: Meeting }) {
     if (!accepted) {
       // Refused by the recovery write lock: keep the text so it can be retried
       // instead of clearing the box and losing it.
-      toast.error("Not saved — the records are locked while a recovery copy is taken. Your text is still here; log it again in a moment.");
+      toast.error("Not saved — this window cannot write (the records are locked for a recovery copy, or another RHODES window owns editing). Your text is still here; log it again once that is resolved.");
       return;
     }
     setText("");

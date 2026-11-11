@@ -23,6 +23,7 @@ import { BootCenterLogo, BOOT_CENTER_LOGO_SRC } from "@/components/BootCenterLog
 import { Button, Field, Modal } from "@/components/ui";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { RecoveryBanner, RecoveryScreen } from "@/components/Recovery";
+import { WriterLeaseBanner } from "@/components/WriterLease";
 import { todayISO } from "@/utils/helpers";
 
 // ── Boot sequence ─────────────────────────────────────────────
@@ -280,7 +281,7 @@ export function QuickNoteModal({ open, onClose }: { open: boolean; onClose: () =
           // A refusal (recovery write lock) must not close the modal or clear the
           // text: the operator's note is still here to retry.
           if (!saveNote(meetingId, html)) {
-            toast.error("Not saved — the records are locked while a recovery copy is taken. Your note is still here; append it again in a moment.");
+            toast.error("Not saved — this window cannot write (the records are locked for a recovery copy, or another RHODES window owns editing). Your note is still here; append it again once that is resolved.");
             return;
           }
           toast.success("Quick note appended to the record.");
@@ -357,6 +358,17 @@ function Core() {
     return () => window.removeEventListener("rhodes:new-meeting", h);
   }, []);
 
+  // A write refused because another window owns editing: say so once, in the
+  // same place every other storage problem is reported.
+  useEffect(() => {
+    const h = (event: Event) => {
+      const message = (event as CustomEvent<{ message?: string }>).detail?.message;
+      toast.error(message ?? "Another RHODES window is editing these records — nothing was written here.");
+    };
+    window.addEventListener("rhodes:write-blocked", h);
+    return () => window.removeEventListener("rhodes:write-blocked", h);
+  }, [toast]);
+
   // Ctrl+S → force persist; report what actually happened
   useEffect(() => {
     const h = async () => {
@@ -394,6 +406,7 @@ function Core() {
   return (
     <UiContext.Provider value={ui}>
       <RecoveryBanner />
+      <WriterLeaseBanner />
       <AnimatePresence>{showBoot && <BootSequence key="boot" done={() => setBooted(true)} />}</AnimatePresence>
 
       {/* The shell mounts only after the hand-off — nothing of the Command

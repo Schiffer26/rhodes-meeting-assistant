@@ -12,7 +12,7 @@ import { useUi } from "@/hooks/ui";
 export function MeetingFormModal({ meetingId, open, onClose, onCreated }: {
   meetingId?: string | null; open: boolean; onClose: () => void; onCreated?: (id: string) => void;
 }) {
-  const { data, createMeeting, updateMeeting, createPerson } = useAppData();
+  const { data, createMeeting, updateMeeting, createPerson, readOnly } = useAppData();
   const toast = useToast();
   const editing = meetingId ? data.meetings.find((m) => m.id === meetingId) ?? null : null;
 
@@ -56,6 +56,12 @@ export function MeetingFormModal({ meetingId, open, onClose, onCreated }: {
   };
 
   const submit = () => {
+    // Read-only window: say so instead of registering a meeting that the store
+    // refused to store. Nothing here is written, so claiming success would lie.
+    if (readOnly) {
+      toast.error("Another RHODES window owns editing access — no record was created or changed here. Close that window to edit these records.");
+      return;
+    }
     const e: Record<string, string> = {};
     if (!title.trim()) e.title = "A meeting title is required.";
     if (!date) e.date = "A meeting date is required.";

@@ -254,6 +254,7 @@ export function RecoveryBanner() {
   return (
     <div
       role="status"
+      data-recovery-notice=""
       style={{
         position: "fixed", left: 16, bottom: 16, zIndex: 150,
         maxWidth: 460, display: "flex", alignItems: "flex-start", gap: 10,
