@@ -126,6 +126,17 @@ export interface ImportPreview {
   error?: string;
   counts?: Record<string, number>;
   current?: Record<string, number>;
+  /**
+   * Migration and default adjustments made while reading the file — a schema
+   * migration, a settings block that was not supplied. Harmless, and the records
+   * are complete; they are shown separately from `warnings` because they say
+   * nothing about the file being incomplete.
+   */
+  adjustments?: string[];
+  /**
+   * Personnel references the file names but does not contain. Non-blocking: the
+   * meeting, decision or task still imports, and the person shows as unassigned.
+   */
   warnings?: string[];
 }
 
@@ -1082,9 +1093,11 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
       ok: true,
       counts: result.counts,
       current: countOf(data),
-      // Repairs are cosmetic; relationship warnings are people the file mentions
-      // but does not contain. Neither blocks the import.
-      warnings: [...result.repaired, ...result.relationshipWarnings],
+      // Two different kinds of notice, kept apart: an adjustment is something
+      // the reader did to a complete file, a warning is something the file does
+      // not contain. Neither blocks the import.
+      adjustments: result.repaired,
+      warnings: result.relationshipWarnings,
     };
   }, [data]);
 

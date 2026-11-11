@@ -14,6 +14,28 @@ import { storage } from "@/services/storage";
 import { downloadFile, friendlyBytes, readFileText } from "@/utils/helpers";
 import type { Density, FontSize, MotionPref, ThemeMode } from "@/types";
 
+/**
+ * One block of non-blocking import findings, listed verbatim in the order the
+ * reader produced them. Rendered only when there is something to list, so a
+ * clean file shows no heading and no empty list.
+ */
+function ImportNotice({ label, title, items, colour, note }: {
+  label: string; title: string; items: string[]; colour: string; note: React.ReactNode;
+}) {
+  return (
+    <section style={{ marginTop: 10 }} aria-label={label}>
+      <div className="small" style={{ color: colour, fontWeight: 600 }}>{title}</div>
+      {/* Tailwind's reset drops list markers; they carry the reading here. */}
+      <ul className="small dim-2" style={{ margin: "4px 0 0", paddingLeft: 16, listStyle: "disc" }}>
+        {items.map((item, i) => (
+          <li key={`${i}-${item}`} style={{ marginTop: 2 }}>{item}</li>
+        ))}
+      </ul>
+      <div className="small dim-2" style={{ marginTop: 6 }}>{note}</div>
+    </section>
+  );
+}
+
 export function SystemConfiguration() {
   const { data, updateSettings, exportJSON, previewImport, importJSON, resetToDemo, restoreDefaultSettings } = useAppData();
   const toast = useToast();
@@ -267,27 +289,30 @@ export function SystemConfiguration() {
                 This file contains no records. Confirming will leave the registry empty.
               </div>
             )}
+            {!!pending.preview.adjustments?.length && (
+              // What the reader had to do to a complete file: a schema
+              // migration, defaults for a missing block. Nothing is missing.
+              <ImportNotice
+                label="Import adjustments"
+                colour="var(--accent)"
+                title={`Import adjustments — ${pending.preview.adjustments.length}`}
+                items={pending.preview.adjustments}
+                note={<>These are housekeeping, not losses: the file was read in full and brought up to the current
+                  format. Every record it contains is imported.</>}
+              />
+            )}
             {!!pending.preview.warnings?.length && (
-              // Non-blocking findings from the same check that would refuse a
-              // broken file — today, references to people the file does not
-              // contain. Shown verbatim, and only when there is something to say.
-              <section style={{ marginTop: 10 }} aria-label="Import warnings">
-                <div className="small" style={{ color: "var(--warn)", fontWeight: 600 }}>
-                  Import warnings — {pending.preview.warnings.length}{" "}
-                  {pending.preview.warnings.length === 1 ? "reference" : "references"} could not be resolved
-                </div>
-                {/* Tailwind's reset drops list markers; they carry the reading here. */}
-                <ul className="small dim-2" style={{ margin: "4px 0 0", paddingLeft: 16, listStyle: "disc" }}>
-                  {pending.preview.warnings.map((w, i) => (
-                    <li key={`${i}-${w}`} style={{ marginTop: 2 }}>{w}</li>
-                  ))}
-                </ul>
-                <div className="small dim-2" style={{ marginTop: 6 }}>
-                  These warnings do not block the import. A missing person is not a broken record: the
-                  affected meeting, decision or task still imports, and the person appears as <b>Unassigned</b>{" "}
-                  until you add them to the registry.
-                </div>
-              </section>
+              // People the file names but does not contain. The records that
+              // mention them still import — the reference is what is unknown.
+              <ImportNotice
+                label="Unresolved personnel references"
+                colour="var(--warn)"
+                title={`Unresolved personnel references — ${pending.preview.warnings.length}`}
+                items={pending.preview.warnings}
+                note={<>These warnings do not block the import. A missing person is not a broken record: the
+                  affected meeting, decision or task still imports, and the person appears as <b>Unassigned</b> until
+                  you add them to the registry.</>}
+              />
             )}
             <div className="small dim-2" style={{ marginTop: 10 }}>
               A recovery snapshot of the current records is written before anything is replaced, and the

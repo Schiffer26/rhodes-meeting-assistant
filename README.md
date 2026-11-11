@@ -421,6 +421,13 @@ action items — so the store now checks the edges as well as the fields.
   importable — the *Replace All Records* dialog lists every warning verbatim
   above the recovery-copy note, says the file will still import, and says the
   missing person will show as **Unassigned**. No warnings, no section.
+- **Two kinds of notice, kept apart.** `previewImport()` returns
+  `adjustments` (what the reader did to a *complete* file: a schema migration,
+  defaults for an unsupplied settings block) separately from `warnings` (people
+  the file names but does not contain). The dialog shows them in that order,
+  each with its own heading and count, and neither suggests the other: a v1
+  backup with no missing people reports only the migration, and never mentions
+  *Unassigned*.
 - **A relationship error refuses the whole file.** Nothing is dropped, repaired
   or partially imported: the preview reports it before the confirmation, and the
   import returns `Import refused — …; No records were changed.` The message names
