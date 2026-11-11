@@ -8,6 +8,7 @@ import { Mail, Pencil, Phone, Plus, Search, Trash2, UserRound, X } from "lucide-
 import { Badge, Button, ConfirmDialog, Empty, Field, Modal, PageHeader, Panel, Reveal } from "@/components/ui";
 import { useAppData } from "@/hooks/store";
 import { useToast } from "@/components/toast";
+import { useWriteGuard } from "@/hooks/useWriteGuard";
 import { PageBackdrop } from "@/components/PageBackdrop";
 import type { Route } from "@/layout/AppShell";
 import { Person } from "@/types";
@@ -16,6 +17,7 @@ import { DECISION_STATUS, MEETING_STATUS, PRIORITY, TASK_STATUS, formatDate, isT
 export function PersonnelRegistry({ navigate }: { navigate: (r: Route) => void }) {
   const { data, createPerson, updatePerson, deletePerson } = useAppData();
   const toast = useToast();
+  const canWrite = useWriteGuard();
   const [q, setQ] = useState("");
   const [form, setForm] = useState<Person | "new" | null>(null);
   const [detail, setDetail] = useState<Person | null>(null);
@@ -118,6 +120,9 @@ export function PersonnelRegistry({ navigate }: { navigate: (r: Route) => void }
           <Button onClick={() => setForm(null)}>Cancel</Button>
           <Button variant="primary" onClick={() => {
             if (!f.fullName.trim()) { setErr("Full name is required."); return; }
+            // A window without editing access must not report the person as
+            // registered: the store would refuse the write.
+            if (!canWrite("this personnel file")) return;
             if (editing) { updatePerson(editing.id, { ...f, fullName: f.fullName.trim() }); toast.success(`${f.fullName} updated.`); }
             else { const p = createPerson({ ...f, fullName: f.fullName.trim() }); toast.success(`Registered ${p.fullName} as ${p.code}.`); }
             setForm(null);

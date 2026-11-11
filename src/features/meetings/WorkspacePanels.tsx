@@ -11,6 +11,7 @@ import {
 import { Badge, Button, ConfirmDialog, Empty, Field, Modal, Panel, SaveIndicator } from "@/components/ui";
 import { useAppData } from "@/hooks/store";
 import { useToast } from "@/components/toast";
+import { useWriteGuard } from "@/hooks/useWriteGuard";
 import { useUi } from "@/hooks/ui";
 import type { AgendaItem, AgendaStatus, AttendanceStatus, Decision, Meeting } from "@/types";
 import {
@@ -119,6 +120,7 @@ export function OverviewPanel({ meeting }: { meeting: Meeting }) {
 export function AgendaPanel({ meeting }: { meeting: Meeting }) {
   const { data, addAgendaItem, updateAgendaItem, deleteAgendaItem, moveAgendaItem, setAgendaStatus } = useAppData();
   const toast = useToast();
+  const canWrite = useWriteGuard();
   const [newTitle, setNewTitle] = useState("");
   const [newMin, setNewMin] = useState(10);
   const [editing, setEditing] = useState<AgendaItem | null>(null);
@@ -164,11 +166,12 @@ export function AgendaPanel({ meeting }: { meeting: Meeting }) {
         <div style={{ display: "flex", gap: 8, padding: "10px 14px", borderTop: "1px solid var(--border-soft)", background: "var(--surface-2)" }}>
           <input className="input" style={{ flex: 1, height: 32 }} placeholder="Add agenda topic and press Enter…"
             value={newTitle} onChange={(e) => setNewTitle(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter" && newTitle.trim()) { addAgendaItem(meeting.id, { title: newTitle, estimatedMinutes: newMin }); setNewTitle(""); toast.success("Agenda entry added."); } }} />
+            onKeyDown={(e) => { if (e.key === "Enter" && newTitle.trim()) { if (!canWrite("this agenda entry")) return; addAgendaItem(meeting.id, { title: newTitle, estimatedMinutes: newMin }); setNewTitle(""); toast.success("Agenda entry added."); } }} />
           <input className="input input-mono" type="number" min={1} style={{ width: 76, height: 32 }} value={newMin}
             onChange={(e) => setNewMin(parseInt(e.target.value) || 1)} title="Estimated minutes" aria-label="Estimated minutes" />
           <Button size="sm" style={{ height: 32 }} variant="primary" onClick={() => {
             if (!newTitle.trim()) return;
+            if (!canWrite("this agenda entry")) return;
             addAgendaItem(meeting.id, { title: newTitle, estimatedMinutes: newMin });
             setNewTitle(""); toast.success("Agenda entry added.");
           }}>Add</Button>
@@ -180,6 +183,7 @@ export function AgendaPanel({ meeting }: { meeting: Meeting }) {
           <Button onClick={() => setEditing(null)}>Cancel</Button>
           <Button variant="primary" onClick={() => {
             if (!eTitle.trim()) { toast.error("Topic title is required."); return; }
+            if (!canWrite("this agenda change")) return;
             updateAgendaItem(editing!.id, { title: eTitle.trim(), description: eDesc.trim(), presenterId: ePresenter || null, estimatedMinutes: eMin });
             toast.success("Agenda item updated."); setEditing(null);
           }}>Save</Button>
@@ -548,6 +552,7 @@ export function ActionsPanel({ meeting }: { meeting: Meeting }) {
 export function MinutesPanel({ meeting }: { meeting: Meeting }) {
   const { data, updateMeeting, saveState } = useAppData();
   const toast = useToast();
+  const canWrite = useWriteGuard();
   const agenda = data.agendaItems.filter((a) => a.meetingId === meeting.id).sort((x, y) => x.sortOrder - y.sortOrder);
   const note = data.notes.find((n) => n.meetingId === meeting.id);
   const decisions = data.decisions.filter((d) => d.meetingId === meeting.id);
@@ -583,7 +588,7 @@ export function MinutesPanel({ meeting }: { meeting: Meeting }) {
                 onChange={(e) => updateMeeting(meeting.id, { nextMeetingDate: e.target.value })} />
             </Field>
             {meeting.minuteOverride != null && (
-              <Button size="sm" icon={<RotateCcw size={13} />} onClick={() => { updateMeeting(meeting.id, { minuteOverride: null }); toast.success("Minutes regenerated from current data."); }}>
+              <Button size="sm" icon={<RotateCcw size={13} />} onClick={() => { if (!canWrite("these minutes")) return; updateMeeting(meeting.id, { minuteOverride: null }); toast.success("Minutes regenerated from current data."); }}>
                 Regenerate from data (discard edits)
               </Button>
             )}
@@ -596,7 +601,7 @@ export function MinutesPanel({ meeting }: { meeting: Meeting }) {
               value={draft} onChange={(e) => setDraft(e.target.value)} aria-label="Minutes markdown editor" />
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 10 }}>
               <Button size="sm" onClick={() => setEditing(false)}>Discard</Button>
-              <Button size="sm" variant="primary" onClick={() => { updateMeeting(meeting.id, { minuteOverride: draft }); toast.success("Manual corrections saved."); setEditing(false); }}>Save Corrections</Button>
+              <Button size="sm" variant="primary" onClick={() => { if (!canWrite("these minutes")) return; updateMeeting(meeting.id, { minuteOverride: draft }); toast.success("Manual corrections saved."); setEditing(false); }}>Save Corrections</Button>
             </div>
           </div>
         ) : (

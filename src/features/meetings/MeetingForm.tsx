@@ -5,6 +5,7 @@ import React, { useEffect, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { Button, Field, Modal } from "@/components/ui";
 import { useAppData } from "@/hooks/store";
+import { useWriteGuard } from "@/hooks/useWriteGuard";
 import { useToast } from "@/components/toast";
 import { MEETING_TEMPLATES, todayISO } from "@/utils/helpers";
 import { useUi } from "@/hooks/ui";
@@ -12,7 +13,8 @@ import { useUi } from "@/hooks/ui";
 export function MeetingFormModal({ meetingId, open, onClose, onCreated }: {
   meetingId?: string | null; open: boolean; onClose: () => void; onCreated?: (id: string) => void;
 }) {
-  const { data, createMeeting, updateMeeting, createPerson, readOnly } = useAppData();
+  const { data, createMeeting, updateMeeting, createPerson } = useAppData();
+  const canWrite = useWriteGuard();
   const toast = useToast();
   const editing = meetingId ? data.meetings.find((m) => m.id === meetingId) ?? null : null;
 
@@ -56,12 +58,10 @@ export function MeetingFormModal({ meetingId, open, onClose, onCreated }: {
   };
 
   const submit = () => {
-    // Read-only window: say so instead of registering a meeting that the store
-    // refused to store. Nothing here is written, so claiming success would lie.
-    if (readOnly) {
-      toast.error("Another RHODES window owns editing access — no record was created or changed here. Close that window to edit these records.");
-      return;
-    }
+    // This window cannot write (another one owns the lease, or the lease has not
+    // been granted yet): say so instead of registering a meeting the store would
+    // refuse to store. Nothing is written, so claiming success would lie.
+    if (!canWrite("this meeting")) return;
     const e: Record<string, string> = {};
     if (!title.trim()) e.title = "A meeting title is required.";
     if (!date) e.date = "A meeting date is required.";
@@ -156,6 +156,7 @@ export function MeetingFormModal({ meetingId, open, onClose, onCreated }: {
               placeholder="Quick-add a new person to the registry…" />
             <Button size="sm" style={{ height: 36 }} onClick={() => {
               if (!newPersonName.trim()) return;
+              if (!canWrite("this person")) return;
               const p = createPerson({ fullName: newPersonName.trim(), role: "", department: "", email: "", phone: "", notes: "Added during meeting creation." });
               setAttendeeIds((ids) => [...ids, p.id]);
               setNewPersonName("");

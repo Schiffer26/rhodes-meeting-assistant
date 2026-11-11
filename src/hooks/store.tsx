@@ -92,6 +92,13 @@ export interface Store {
   writeLease: WriterLeaseState;
   /** True while another window owns the lease. */
   readOnly: boolean;
+  /**
+   * Whether this window may write at all (`owner`, or no Web Locks at all).
+   * Distinct from `readOnly`: it is also false in the few milliseconds before
+   * the lease is decided, and false while a restored page is queued again. Any
+   * handler that reports success must ask this, not `readOnly`.
+   */
+  canWrite: boolean;
   /** Re-read the stored records (only meaningful when read-only). */
   reloadFromStorage: () => void;
   /**
@@ -253,6 +260,34 @@ const STALE_WINDOW_MESSAGE =
 /** Edition of the lease that is broadcast to the interface on a refused write. */
 const WRITE_BLOCKED_EVENT = "rhodes:write-blocked";
 
+/**
+ * Canonical form of a stored payload.
+ *
+ * The staleness check asks "is this still the document I last saw?", not "are
+ * these the same bytes?". Key order, whitespace and a re-serialised copy of the
+ * same records are not a change: a window must not be told its records were
+ * replaced because something wrote the same JSON back in another order. A
+ * payload that is not JSON at all is compared verbatim.
+ */
+function canonicalPayload(raw: string | null | undefined): string | null {
+  if (raw == null) return null;
+  const sort = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(sort);
+    if (value && typeof value === "object") {
+      const source = value as Record<string, unknown>;
+      const out: Record<string, unknown> = {};
+      for (const key of Object.keys(source).sort()) out[key] = sort(source[key]);
+      return out;
+    }
+    return value;
+  };
+  try {
+    return JSON.stringify(sort(JSON.parse(raw)));
+  } catch {
+    return raw;
+  }
+}
+
 /** Short, quotable form of an unknown thrown value. */
 function failureText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -364,14 +399,37 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
   const [writeLease, setWriteLease] = useState<WriterLeaseState>("pending");
   const writeLeaseRef = useRef<WriterLeaseState>("pending");
   writeLeaseRef.current = writeLease;
+  /** The lease handle this document currently holds, if any. */
+  const leaseHandleRef = useRef<WriterLeaseHandle | null>(null);
+  /** Timer that turns a slow first grant into an honest "queued" state. */
+  const bootTimerRef = useRef<number | null>(null);
+  /**
+   * Gives the lease back when the document is leaving, *after* its synchronous
+   * lifecycle flush has run (the flush must happen while this window still owns
+   * the lease). Registered by the lease effect, called by the lifecycle effect.
+   */
+  const releaseLeaseOnHideRef = useRef<() => void>(() => {});
   // "pending" lasts a few milliseconds at boot (the lease request is in flight);
   // it is treated as read-only for writing — nothing can legitimately be written
   // before the window knows whether it owns the lease — but it never shows the
   // read-only banner, so the interface does not flash on startup.
   const readOnly = writeLease === "waiting";
   const mayWrite = writeLease === "owner" || writeLease === "unsupported";
-  const mayWriteRef = useRef(mayWrite);
-  mayWriteRef.current = mayWrite;
+  /** Public name for the same question, for handlers that report success. */
+  const canWrite = mayWrite;
+  /**
+   * The same question, answered *synchronously* from the lease ref rather than
+   * from the last render.
+   *
+   * This matters on the way out of a document: the lease is handed back inside
+   * the `pagehide` handler, and a write attempted after that point must already
+   * be refused — React has not re-rendered, so a value derived from state would
+   * still say "owner" and the write would race the next window's grant.
+   */
+  const canWriteNow = useCallback(
+    () => writeLeaseRef.current === "owner" || writeLeaseRef.current === "unsupported",
+    [],
+  );
   /**
    * The exact bytes this window last saw in storage — the baseline for the
    * best-effort staleness check. `undefined` means the adapter cannot report raw
@@ -423,7 +481,7 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
    */
   const rememberStoredRaw = useCallback(() => {
     const raw = source.readRaw?.();
-    lastStoredRaw.current = raw && raw.ok ? raw.raw : undefined;
+    lastStoredRaw.current = raw && raw.ok ? canonicalPayload(raw.raw) : undefined;
   }, [source]);
 
   useEffect(() => {
@@ -442,7 +500,7 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     if (lastStoredRaw.current === undefined) return false;
     const raw = source.readRaw?.();
     if (!raw || !raw.ok) return false;
-    return raw.raw !== lastStoredRaw.current;
+    return canonicalPayload(raw.raw) !== lastStoredRaw.current;
   }, [source]);
 
   /** Tell the interface that a write was refused, at most once every few seconds. */
@@ -483,12 +541,22 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
   }, [applyOutcome, rememberStoredRaw, source]);
 
   /**
-   * Hold the single-writer lease for as long as this document lives.
+   * Hold the single-writer lease for as long as this document is *active*.
    *
    * The first window to ask becomes the writer. Every other window is queued by
    * the browser's lock manager and runs read-only; when the owner goes away the
    * next one is granted the lease and re-reads storage *before* it may write, so
    * it can never publish the document it was showing while it waited.
+   *
+   * Leaving is as important as arriving. A document that is frozen into the
+   * back/forward cache keeps its JavaScript state — including its idea of who
+   * owns the lease — while the browser has already let the lease go, so it must
+   * be made read-only *before* it can be restored, and it must never assume that
+   * a grant it once had is still its own. The order on the way out is fixed:
+   * flush while still owning (the lifecycle effect calls us afterwards), then
+   * stop being writable, then hand the lease back. On the way back in it becomes
+   * non-writable first and only asks for the lease afterwards, so there is no
+   * instant in which two windows both believe they hold it.
    */
   useEffect(() => {
     if (!ready) return;
@@ -500,55 +568,89 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
       return;
     }
     let disposed = false;
-    let handle: WriterLeaseHandle | null = null;
 
-    const request = () => {
-      handle = acquireWriterLease(
-        () => {
-          if (disposed) return;
-          const previous = writeLeaseRef.current;
-          writeLeaseRef.current = "owner";
-          setWriteLease("owner");
-          // A window that was queued (or restored from the back/forward cache)
-          // holds an older document: adopt what is on disk first.
-          if (previous !== "owner") reloadFromStorage();
-        },
-        () => {
-          if (disposed) return;
-          writeLeaseRef.current = "waiting";
-          setWriteLease("waiting");
-        },
-      );
-      if (!handle) {
-        setWriteLease("unsupported");
-        return;
-      }
-      // Provisional state until the grant arrives. Guarded against a grant that
-      // arrives before this line runs: the browser queues the callback, but the
-      // lease is authoritative either way, so never overwrite "owner".
-      if (writeLeaseRef.current !== "owner") {
-        writeLeaseRef.current = "waiting";
-        setWriteLease((current) => (current === "owner" ? "owner" : "waiting"));
-      }
+    const setLease = (next: WriterLeaseState) => {
+      writeLeaseRef.current = next;
+      setWriteLease(next);
     };
 
-    request();
+    const request = (kind: "boot" | "restore") => {
+      // Nothing may be written between here and the grant. `boot` keeps the
+      // banner quiet for the few milliseconds of a normal start; `restore` is a
+      // document that has been away and may well be queued behind the window
+      // that took the lease in the meantime, so it says so immediately.
+      setLease(kind === "restore" ? "waiting" : "pending");
+      if (kind === "boot") {
+        // A normal start is granted in well under a frame. If it has not been by
+        // now, this window is queued behind another one — and a window that
+        // cannot write must say so rather than look normal and refuse silently.
+        const timer = window.setTimeout(() => {
+          // Only the *grant* changes this outcome: a request handle exists from
+          // the moment we ask, so it says nothing about whether we own anything.
+          if (disposed) return;
+          if (writeLeaseRef.current !== "pending") return;
+          setLease("waiting");
+        }, 400);
+        bootTimerRef.current = timer;
+      }
+      const acquired = acquireWriterLease(
+        () => {
+          if (disposed) return;
+          if (bootTimerRef.current !== null) { window.clearTimeout(bootTimerRef.current); bootTimerRef.current = null; }
+          setLease("owner");
+          // Always adopt what is on disk before writing. A window that was
+          // queued — or that was restored from the back/forward cache with a
+          // document that is now arbitrarily old — holds a copy that is not
+          // necessarily the stored one.
+          reloadFromStorage();
+        },
+        () => {
+          if (disposed) return;
+          setLease("waiting");
+        },
+      );
+      if (!acquired) {
+        setLease("unsupported");
+        return;
+      }
+      leaseHandleRef.current = acquired;
+    };
 
-    // Give the lease up when this document is going away, so the next window is
-    // granted it immediately instead of waiting for the browser to tear us down.
-    const onPageHide = () => { handle?.release(); handle = null; };
-    // Returning from the back/forward cache resumes a document whose lease was
-    // released on the way out: ask for it again rather than writing without it.
-    const onPageShow = (event: PageTransitionEvent) => { if (event.persisted && !handle) request(); };
-    window.addEventListener("pagehide", onPageHide);
+    request("boot");
+
+    // Handing the lease back is the last thing this document does on the way
+    // out; the lifecycle effect calls this *after* its synchronous flush, so the
+    // flush runs while the window still owns the lease.
+    releaseLeaseOnHideRef.current = () => {
+      if (!leaseHandleRef.current) return;
+      // Read-only first, then give the lock back: no other window can be granted
+      // it while this one still considers itself the writer.
+      setLease("waiting");
+      leaseHandleRef.current.release();
+      leaseHandleRef.current = null;
+    };
+
+    // Restored from the back/forward cache: this document gave the lease back on
+    // the way out, so it owns nothing now. Ask for it again and stay read-only
+    // until the answer arrives.
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (!event.persisted) return;
+      if (leaseHandleRef.current) {
+        // Defensive: a page that still holds a handle must not request a second
+        // one (it would queue behind itself). Give it back and start over.
+        releaseLeaseOnHideRef.current();
+      }
+      request("restore");
+    };
     window.addEventListener("pageshow", onPageShow);
 
     return () => {
       disposed = true;
-      window.removeEventListener("pagehide", onPageHide);
       window.removeEventListener("pageshow", onPageShow);
-      handle?.release();
-      handle = null;
+      releaseLeaseOnHideRef.current = () => {};
+      if (bootTimerRef.current !== null) { window.clearTimeout(bootTimerRef.current); bootTimerRef.current = null; }
+      leaseHandleRef.current?.release();
+      leaseHandleRef.current = null;
     };
   }, [ready, reloadFromStorage]);
 
@@ -677,7 +779,7 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
   const scheduleWrite = useCallback((doc: AppData) => {
     // Defence in depth: a read-only window must never reach the adapter, even if
     // a future call site forgets to ask. The recovery lock is checked the same way.
-    if (writesBlockedRef.current || !mayWriteRef.current) return;
+    if (writesBlockedRef.current || !canWriteNow()) return;
     pendingDoc.current = doc;
     const seq = docSeq.current;
     setSaveState("saving");
@@ -691,14 +793,14 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
       if (!queued) return;
       void writeDocument(queued, seq).catch(() => undefined);
     }, 280);
-  }, [writeDocument]);
+  }, [canWriteNow, writeDocument]);
 
   const persist = useCallback((next: AppData) => {
     // Defence in depth: `mutate` already refuses while writes are blocked, and a
     // timer scheduled before the lock cannot exist (the lock is known at boot).
-    if (writesBlockedRef.current || !mayWriteRef.current) return;
+    if (writesBlockedRef.current || !canWriteNow()) return;
     scheduleWrite(next);
-  }, [scheduleWrite]);
+  }, [canWriteNow, scheduleWrite]);
 
   /**
    * Take the document for an exclusive operation, or report why it cannot.
@@ -709,14 +811,14 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     if (writesBlockedRef.current) {
       return { ok: false, error: BLOCKED_WRITE_MESSAGE + " Nothing was changed." };
     }
-    if (!mayWriteRef.current) {
+    if (!canWriteNow()) {
       notifyWriteRefused(READ_ONLY_MESSAGE);
       return { ok: false, error: READ_ONLY_MESSAGE };
     }
     if (exclusiveRef.current) return { ok: false, error: BUSY_MESSAGE };
     exclusiveRef.current = kind;
     return { ok: true };
-  }, [notifyWriteRefused]);
+  }, [canWriteNow, notifyWriteRefused]);
 
   /**
    * Release the document and replay any edit that arrived while it was held.
@@ -804,7 +906,7 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
    */
   const mutate = useCallback((fn: (d: AppData) => AppData) => {
     if (writesBlockedRef.current) return { ok: false, reason: "blocked" as const };
-    if (!mayWriteRef.current) {
+    if (!canWriteNow()) {
       notifyWriteRefused(READ_ONLY_MESSAGE);
       return { ok: false, reason: "readonly" as const };
     }
@@ -821,7 +923,7 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     setData(next);
     persist(next);
     return { ok: true };
-  }, [notifyWriteRefused, persist]);
+  }, [canWriteNow, notifyWriteRefused, persist]);
 
   /**
    * Check that a recovery copy really reached storage.
@@ -1307,7 +1409,7 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
         error: BLOCKED_WRITE_MESSAGE,
       };
     }
-    if (!mayWriteRef.current) {
+    if (!canWriteNow()) {
       notifyWriteRefused(READ_ONLY_MESSAGE);
       return { ok: false, error: READ_ONLY_MESSAGE };
     }
@@ -1332,7 +1434,7 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
         error: `Could not write to storage (${failureText(error)}). Nothing was persisted; your records are still queued for retry.`,
       };
     }
-  }, [notifyWriteRefused, writeDocument, scheduleWrite]);
+  }, [canWriteNow, notifyWriteRefused, writeDocument, scheduleWrite]);
 
   const registerUnloadFlush = useCallback((flushDraft: (commit: boolean) => boolean) => {
     unloadFlushers.current.add(flushDraft);
@@ -1371,7 +1473,7 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     //     and it must not absorb the editors' drafts either (they would then
     //     live only in memory here). The drafts stay in the editors, where the
     //     operator can still see them, and `beforeunload` asks before closing.
-    if (!mayWriteRef.current) {
+    if (!canWriteNow()) {
       return { ok: false, error: READ_ONLY_MESSAGE, pending: draftsAtRisk() || unsavedBefore };
     }
 
@@ -1446,7 +1548,7 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     // A refused draft can only happen while writes are blocked, and that case
     // has already returned above — so reaching here means everything is down.
     return { ok: true, pending: false };
-  }, [rememberStoredRaw, scheduleWrite, source, storageMovedUnderUs]);
+  }, [canWriteNow, rememberStoredRaw, scheduleWrite, source, storageMovedUnderUs]);
 
   /**
    * Lifecycle safety net for the debounce windows.
@@ -1472,7 +1574,16 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
       }
       return result;
     };
-    const onPageHide = () => { flushForLifecycle(); };
+    /**
+     * The order here is the guarantee: the document is written (or the drafts are
+     * reported as unsaved) while this window still owns the lease, and only then
+     * is the lease handed back — so the next window never receives records this
+     * one has not finished writing.
+     */
+    const onPageHide = () => {
+      flushForLifecycle();
+      releaseLeaseOnHideRef.current();
+    };
     const onBeforeUnload = (event: BeforeUnloadEvent) => { flushForLifecycle(event); };
     const onVisibilityChange = () => {
       if (document.visibilityState === "hidden") flushForLifecycle();
@@ -1740,7 +1851,7 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     createActionItem, updateActionItem, deleteActionItem, setActionStatus,
     addAttendee, removeAttendee, setAttendance,
     updateSettings, flush, flushSynchronously, registerUnloadFlush,
-    writeLease, readOnly, reloadFromStorage,
+    writeLease, readOnly, canWrite, reloadFromStorage,
     exportJSON, previewImport, importJSON, resetToDemo, restoreDefaultSettings,
     dismissRecovery, startWithDemoData,
   }), [
@@ -1752,7 +1863,7 @@ export function DataProvider({ children, adapter }: { children: React.ReactNode;
     createDecision, updateDecision, deleteDecision,
     createActionItem, updateActionItem, deleteActionItem, setActionStatus,
     addAttendee, removeAttendee, setAttendance,
-    updateSettings, flush, flushSynchronously, registerUnloadFlush, writeLease, readOnly, reloadFromStorage,
+    updateSettings, flush, flushSynchronously, registerUnloadFlush, writeLease, readOnly, canWrite, reloadFromStorage,
     exportJSON, importJSON, resetToDemo, restoreDefaultSettings,
   ]);
 
