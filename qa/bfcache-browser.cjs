@@ -148,6 +148,85 @@ async function launchOptions() {
     }
     return false;
   };
+
+  /** Records the meeting list is currently showing (one open-button per record). */
+  const countMeetings = (p) => p.evaluate(
+    () => document.querySelectorAll('[aria-label^="Open "][aria-label$=" workspace"]').length,
+  );
+
+  /**
+   * Open the meeting form **without navigating**, fill it and submit it, and
+   * report exactly what happened.
+   *
+   * Two things make this evidence rather than decoration. It never navigates:
+   * the window under test must stay the same (restored) document, which the
+   * caller verifies with a marker set before the attempt — a reload would reset
+   * the very state the test is about. And it reports `opened`, `typed` and
+   * `submitted` separately, so "storage did not change" cannot be mistaken for
+   * "the refusal happened".
+   */
+  const submitMeetingFormInPlace = async (p, title) => {
+    const report = {
+      via: null, opened: false, typed: false, submitted: false, dialogOpenAfter: false,
+      feedback: "", meetingsBefore: 0, meetingsAfter: 0, titleOnScreen: false, sameDocument: false,
+    };
+
+    // Nothing modal in the way.
+    if (await p.evaluate(() => !!document.querySelector('[role="dialog"]'))) {
+      await p.keyboard.press("Escape");
+      await wait(400);
+    }
+    // Back to the record list with the workspace's own control — still the same
+    // document, which is the whole point.
+    const back = await p.$('button[aria-label="Back to Meeting Operations"]');
+    if (back) { await back.click(); await wait(900); }
+    report.meetingsBefore = await countMeetings(p);
+
+    // Preferred: the record list on this screen. Fallback: the same form opened
+    // by the shell's "new meeting" command (Ctrl+N) — still no navigation.
+    const tile = await p.$('button[aria-label="Meeting Operations"]');
+    if (tile) {
+      await tile.click();
+      await wait(800);
+      report.meetingsBefore = await countMeetings(p);
+      const openBtn = await p.evaluateHandle(() => [...document.querySelectorAll("button")].find((b) => (b.textContent || "").trim() === "New Meeting"));
+      if (openBtn.asElement()) { await openBtn.asElement().click(); report.via = "nav"; }
+    }
+    if (report.via === null) {
+      await p.evaluate(() => window.dispatchEvent(new CustomEvent("rhodes:new-meeting")));
+      report.via = "event";
+    }
+    for (let j = 0; j < 12 && !report.opened; j++) {
+      report.opened = await p.evaluate(() => !!document.querySelector('[role="dialog"]'));
+      if (!report.opened) await wait(250);
+    }
+    if (!report.opened) return report;
+
+    const input = await p.$('[role="dialog"] input[type="text"], [role="dialog"] input:not([type])');
+    if (!input) return report;
+    await input.click();
+    await p.keyboard.type(title, { delay: 8 });
+    report.typed = await p.evaluate(
+      ([t]) => (document.querySelector('[role="dialog"] input[type="text"], [role="dialog"] input:not([type])')?.value ?? "") === t,
+      [title],
+    );
+    const create = await p.evaluateHandle(() => [...document.querySelectorAll('[role="dialog"] button')].find((b) => (b.textContent || "").trim() === "Create Meeting"));
+    if (!report.typed || !create.asElement()) return report;
+
+    await create.asElement().click();
+    report.submitted = true;
+    await wait(1300);                                  // toasts live 3.4 s
+    report.dialogOpenAfter = await p.evaluate(() => !!document.querySelector('[role="dialog"]'));
+    // Every toast is a panel with a Dismiss control; its message is that text.
+    report.feedback = await p.evaluate(
+      () => [...document.querySelectorAll('button[aria-label="Dismiss"]')].map((b) => b.parentElement?.innerText ?? "").join(" | "),
+    );
+    report.meetingsAfter = await countMeetings(p);
+    report.titleOnScreen = await p.evaluate(([t]) => !!document.querySelector(`[aria-label="Open ${t} workspace"]`), [title]);
+    report.sameDocument = await p.evaluate(() => window.__qa?.mark === "restored-document");
+    return report;
+  };
+
   const typeDraft = async (p, text) => {
     const editor = await p.$('.editor-area[aria-label="Meeting notes editor"]');
     await editor.click();
@@ -248,12 +327,35 @@ async function launchOptions() {
   const timeline = (await events(A)).filter((e) => ["pagehide", "pageshow", "setItem"].includes(e.ev));
   console.log("   timeline (A):", JSON.stringify(timeline.map((e) => (e.ev === "setItem" ? `setItem:${e.len}` : `${e.ev}:persisted=${e.persisted}`))));
 
+  // A save attempted from the restored window: not merely "storage did not
+  // change afterwards", but the *same restored document* really opening the
+  // form, really filling it in and really submitting it, with the refusal
+  // visible on screen. The marker proves the attempt did not run in a reloaded
+  // page, where every protection would trivially hold.
+  await A.evaluate(() => { window.__qa.mark = "restored-document"; });
   const beforeAttempt = await storage(A);
-  await attemptMeeting(A, "MT-FROM-RESTORED-WINDOW");
-  await wait(700);
+  const attempt = await submitMeetingFormInPlace(A, "MT-FROM-RESTORED-WINDOW");
+  await wait(500);
   const afterAttempt = await storage(A);
-  check("BF14 a save attempted from the restored window does not modify storage", afterAttempt === beforeAttempt,
+  check("BF14a the restored document's meeting form was opened",
+    attempt.opened === true && attempt.sameDocument === true,
+    JSON.stringify({ via: attempt.via, opened: attempt.opened, sameDocument: attempt.sameDocument }));
+  check("BF14b the meeting title was entered and the submission attempted",
+    attempt.typed === true && attempt.submitted === true, JSON.stringify({ typed: attempt.typed, submitted: attempt.submitted }));
+  check("BF14c the attempted meeting was not added to the document",
+    attempt.titleOnScreen === false &&
+      (attempt.meetingsBefore === 0 || attempt.meetingsAfter === attempt.meetingsBefore),
+    `${attempt.meetingsBefore} → ${attempt.meetingsAfter} records on screen, on screen=${attempt.titleOnScreen}`);
+  check("BF14d it never reached storage", afterAttempt === beforeAttempt && !afterAttempt.includes("MT-FROM-RESTORED-WINDOW"),
     `${describe(beforeAttempt).meetings} → ${describe(afterAttempt).meetings} meetings, ${describe(afterAttempt).chars} chars`);
+  check("BF14e the restored window is still read-only",
+    (await leaseState(A)) === "waiting" && (await noticeMode(A)) === "readonly",
+    `state=${await leaseState(A)} notice=${await noticeMode(A)}`);
+  check("BF14f it kept the form open and said the meeting was not saved",
+    attempt.dialogOpenAfter === true && /not saved/i.test(attempt.feedback),
+    JSON.stringify({ dialogOpen: attempt.dialogOpenAfter, feedback: attempt.feedback.slice(0, 160) }));
+  // Leave the refused form so the remaining steps start from the record list.
+  if (attempt.dialogOpenAfter) { await A.keyboard.press("Escape"); await wait(500); }
   check("BF15 it says why nothing was written",
     (await notices(A)).some((t) => /Another RHODES window|editing access|READ-ONLY/i.test(t)),
     JSON.stringify(await notices(A)).slice(0, 160));
@@ -263,9 +365,17 @@ async function launchOptions() {
   await wait(2500);
   check("BF16 the restored window becomes the writer once the other one leaves",
     (await leaseState(A)) === "owner", `state=${await leaseState(A)}`);
+  // What it adopted, read from the same document (the workspace's own "back to
+  // the record list" control — no reload, which would prove nothing about the
+  // reload the grant performed).
+  await A.evaluate(() => { window.__qa.markAdopted = "same-document"; });
+  const backTo = await A.$('button[aria-label="Back to Meeting Operations"]');
+  if (backTo) { await backTo.click(); await wait(900); }
+  const adoptedText = await bodyText(A);
+  const sameDoc = await A.evaluate(() => window.__qa?.markAdopted === "same-document");
   check("BF17 it re-read the stored records before enabling writes",
-    (await bodyText(A)).includes("MT-TAB-B-BFCACHE"),
-    `titles shown=${JSON.stringify(describe(await storage(A)).titles)}`);
+    adoptedText.includes("MT-TAB-B-BFCACHE") && sameDoc === true,
+    `sameDocument=${sameDoc} shown=${adoptedText.includes("MT-TAB-B-BFCACHE")}`);
 
   await openMeetings(A);
   await attemptMeeting(A, "MT-AFTER-RESTORE");

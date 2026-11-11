@@ -96,15 +96,58 @@ const describe = (raw) => {
     await p.keyboard.type(text, { delay: 10 });
     await wait(120);
   };
+  /**
+   * Open the meeting form, fill it and submit it.
+   *
+   * Every control is waited for, and the way there is retried: after a hand-over
+   * the tab may still be sitting on a workspace screen, and a missing button is a
+   * *harness* failure — so it raises a clear error instead of a null dereference,
+   * and the whole routine is retried once from a fresh load first.
+   */
   const attemptMeeting = async (p, title) => {
-    await openMeetings(p);
-    const btn = await p.evaluateHandle(() => [...document.querySelectorAll("button")].find((b) => (b.textContent || "").trim() === "New Meeting"));
+    const findNewMeeting = async () => {
+      for (let i = 0; i < 20; i++) {
+        const h = await p.evaluateHandle(() => [...document.querySelectorAll("button")].find((b) => (b.textContent || "").trim() === "New Meeting"));
+        if (h.asElement()) return h;
+        await wait(300);
+      }
+      return null;
+    };
+    const dialogOpen = () => p.evaluate(() => !!document.querySelector('[role="dialog"]'));
+    const waitFor = async (fn, ms) => {
+      for (let spent = 0; spent < ms; spent += 250) {
+        if (await fn()) return true;
+        await wait(250);
+      }
+      return false;
+    };
+
+    let btn = null;
+    for (let round = 0; round < 3 && !btn; round++) {
+      await openMeetings(p, { reset: round > 0 });
+      btn = await findNewMeeting();
+    }
+    if (!btn) throw new Error(`"New Meeting" is not on the Meeting Operations screen (wanted ${title})`);
+
     await btn.asElement().click();
-    await wait(600);
+    if (!(await waitFor(dialogOpen, 4000))) {
+      // A leftover overlay can swallow the click; clear it and press the button
+      // directly, which still goes through the app's own handler.
+      await p.keyboard.press("Escape");
+      await p.evaluate(() => [...document.querySelectorAll("button")].find((b) => (b.textContent || "").trim() === "New Meeting")?.click());
+    }
+    if (!(await waitFor(dialogOpen, 6000))) throw new Error(`the meeting form did not open (wanted ${title})`);
+
     const input = await p.$('[role="dialog"] input[type="text"], [role="dialog"] input:not([type])');
+    if (!input) throw new Error(`the meeting form has no title field (wanted ${title})`);
     await input.click();
     await p.keyboard.type(title, { delay: 8 });
-    const create = await p.evaluateHandle(() => [...document.querySelectorAll('[role="dialog"] button')].find((b) => (b.textContent || "").trim() === "Create Meeting"));
+    let create = null;
+    for (let i = 0; i < 12 && !create; i++) {
+      create = await p.evaluateHandle(() => [...document.querySelectorAll('[role="dialog"] button')].find((b) => (b.textContent || "").trim() === "Create Meeting"));
+      if (!create.asElement()) { create = null; await wait(250); }
+    }
+    if (!create) throw new Error(`the meeting form has no submit control (wanted ${title})`);
     await create.asElement().click();
     await wait(1400);
   };

@@ -46,6 +46,15 @@ still owns the lease, then hand it back), the restore (non-writable before the
 new request, and not writable until the grant), the reload on grant, and the
 stale-document refusal in between.
 
+The refusal checks (BF14a-f) are evidence rather than decoration: they require
+the *same restored document* to open the meeting form, enter a title and press
+the submit button, and they fail if any of that could not be done. A marker set
+in the page before the attempt proves it did not run in a reloaded page, where
+every protection would hold trivially; the refusal must also be visible on
+screen (the form stays open and says the meeting was not saved). Removing the
+protection makes these checks fail with a *success* toast and a changed
+document — exactly the lie they exist to catch.
+
 ```bash
 node qa/bfcache-browser.cjs            # QA_PORT=5193 is the default
 ```
