@@ -8,18 +8,123 @@
 // A second run without a Web Locks API checks the documented fallback: writes
 // are allowed, but a window whose copy went stale refuses to publish it.
 //
-//   node qa/cross-tab.mjs   (run from the repository root)
+//   node qa/cross-tab.mjs   (run from the repository root; Linux, macOS or Windows)
 import { JSDOM, VirtualConsole } from "jsdom";
 import fs from "fs";
-import { execSync } from "child_process";
+import os from "os";
+import path from "path";
+import { execFileSync } from "child_process";
+import { createRequire } from "module";
+import { fileURLToPath } from "url";
 
-execSync(
-  "npx esbuild qa/cross-tab-entry.tsx --bundle --format=iife --outfile=/tmp/rhodes-cross-tab.js " +
-  "--loader:.css=empty --loader:.woff2=empty --loader:.woff=empty " +
-  "--define:process.env.NODE_ENV='\"production\"' --jsx=automatic --alias:@=./src --log-level=warning",
-  { stdio: "inherit" },
-);
-const bundle = fs.readFileSync("/tmp/rhodes-cross-tab.js", "utf8");
+const require = createRequire(import.meta.url);
+const here = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(here, "..");
+const entry = path.join(repoRoot, "qa", "cross-tab-entry.tsx");
+
+// A private build directory under the platform's temporary directory. `os.tmpdir()`
+// is /tmp on Linux, /var/folders/... on macOS and %LOCALAPPDATA%\Temp on Windows,
+// where a literal "/tmp" does not exist. `mkdtemp` makes the name unique, so two
+// runs — or two checkouts — never collide, and nothing is written into the repo.
+const buildDir = fs.mkdtempSync(path.join(os.tmpdir(), "rhodes-cross-tab-"));
+const bundlePath = path.join(buildDir, "cross-tab.js");
+
+let cleaned = false;
+const cleanup = () => {
+  if (cleaned) return;
+  cleaned = true;
+  try {
+    fs.rmSync(buildDir, { recursive: true, force: true });
+  } catch {
+    // Windows can still hold a handle to a just-written file. Best effort: the
+    // directory is in the OS temp area and the next run uses a fresh one.
+  }
+};
+process.on("exit", cleanup);
+process.on("SIGINT", () => { cleanup(); process.exit(130); });
+process.on("SIGTERM", () => { cleanup(); process.exit(143); });
+
+// The bundling options, as values rather than shell words, so a checkout under
+// "C:\Users\Jane Doe\..." needs no quoting anywhere.
+const buildOptions = {
+  entryPoints: [entry],
+  bundle: true,
+  format: "iife",
+  outfile: bundlePath,
+  loader: { ".css": "empty", ".woff2": "empty", ".woff": "empty" },
+  define: { "process.env.NODE_ENV": '"production"' },
+  jsx: "automatic",
+  alias: { "@": path.join(repoRoot, "src") },
+  logLevel: "warning",
+};
+
+// The same options for esbuild's own CLI, used only by the fallback below.
+const cliArgs = [
+  entry,
+  "--bundle",
+  "--format=iife",
+  `--outfile=${bundlePath}`,
+  "--loader:.css=empty",
+  "--loader:.woff2=empty",
+  "--loader:.woff=empty",
+  '--define:process.env.NODE_ENV="production"',
+  "--jsx=automatic",
+  `--alias:@=${path.join(repoRoot, "src")}`,
+  "--log-level=warning",
+];
+
+/**
+ * Bundle the QA entry with esbuild.
+ *
+ * esbuild's JavaScript API is tried first: paths are passed as values (no shell
+ * to mangle backslashes or split on spaces) and it works identically on every
+ * platform. If esbuild cannot be resolved as a module, the same options go to
+ * esbuild's native binary through `execFileSync(binary, [...])` — an argument
+ * array straight to the process, again with no shell in between.
+ *
+ * `RHODES_QA_ESBUILD=cli` forces the second route, which is how the fallback is
+ * exercised here (`RHODES_QA_ESBUILD=cli node qa/cross-tab.mjs`); the default
+ * needs no environment at all.
+ */
+const buildBundle = () => {
+  const forceCli = process.env.RHODES_QA_ESBUILD === "cli";
+  let esbuild = null;
+  if (!forceCli) {
+    try {
+      esbuild = require("esbuild");
+    } catch (error) {
+      if (error.code !== "MODULE_NOT_FOUND") throw error;
+    }
+  }
+  if (esbuild) {
+    esbuild.buildSync(buildOptions);
+    return;
+  }
+  // The native esbuild binary: the platform package first (that is where npm
+  // puts it, as `esbuild.exe` on Windows), then the copy esbuild's own install
+  // script leaves in bin/.
+  const platformPkg = path.join(repoRoot, "node_modules", "@esbuild", `${process.platform}-${process.arch}`);
+  const candidates = [
+    path.join(platformPkg, "bin", "esbuild"),
+    path.join(platformPkg, "esbuild.exe"),
+    path.join(repoRoot, "node_modules", "esbuild", "bin", "esbuild"),
+    path.join(repoRoot, "node_modules", "esbuild", "bin", "esbuild.exe"),
+  ];
+  const bin = candidates.find((candidate) => fs.existsSync(candidate));
+  if (!bin) {
+    throw new Error("esbuild is not installed — run `npm install` in the repository root first");
+  }
+  execFileSync(bin, cliArgs, { cwd: repoRoot, stdio: "inherit" });
+};
+
+let bundle;
+try {
+  buildBundle();
+  bundle = fs.readFileSync(bundlePath, "utf8");
+} finally {
+  // The bundle is in memory now; the temporary directory is not needed again.
+  cleanup();
+}
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const results = [];

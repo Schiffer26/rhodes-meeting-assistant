@@ -13,7 +13,39 @@
 //
 //   NODE_PATH=$PWD/node_modules node qa/bfcache-browser.cjs
 //   QA_PORT=5193 CHROME_PATH=/path/to/chrome node qa/bfcache-browser.cjs
+//   Windows PowerShell: $env:CHROME_PATH = "C:\Program Files\Google\Chrome\Application\chrome.exe"; node qa/bfcache-browser.cjs
 const puppeteer = require("puppeteer-core");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+
+// ── A throwaway browser profile, in the platform's temporary directory ──
+//
+// A literal "/tmp" does not exist on Windows. `os.tmpdir()` is /tmp on Linux,
+// /var/folders/... on macOS and %LOCALAPPDATA%\Temp on Windows; `mkdtemp` adds a
+// unique suffix, so each run keeps the isolation these tests depend on — two
+// tabs share one storage area, and nothing else (another run, another checkout,
+// a real RHODES window) can see it. The directory is removed when the process
+// ends, including on Ctrl+C and on a failed run.
+const profiles = [];
+const makeProfileDir = (prefix) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  profiles.push(dir);
+  return dir;
+};
+const removeProfileDirs = () => {
+  for (const dir of profiles.splice(0)) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // Windows can keep handles to a profile that was just closed; the
+      // directory lives in the OS temp area, so leaving it is harmless.
+    }
+  }
+};
+process.on("exit", removeProfileDirs);
+process.on("SIGINT", () => { removeProfileDirs(); process.exit(130); });
+process.on("SIGTERM", () => { removeProfileDirs(); process.exit(143); });
 
 const PORT = process.env.QA_PORT || "5193";
 const BASE = `http://localhost:${PORT}/`;
@@ -54,7 +86,7 @@ async function launchOptions() {
   const opts = await launchOptions();
   const browser = await puppeteer.launch({
     ...opts,
-    userDataDir: `/tmp/qa-bfcache-profile-${Date.now()}`,
+    userDataDir: makeProfileDir("qa-bfcache-profile-"),
   });
 
   const waitFor = async (p, fn, timeout = 20000) => {
@@ -443,6 +475,7 @@ async function launchOptions() {
 
   console.log(`\n${pass}/${pass + fail} passed`);
   await browser.close();
+  removeProfileDirs();
   process.exit(fail === 0 ? 0 : 1);
 })().catch(async (error) => {
   console.error("HARNESS ERROR:", error);

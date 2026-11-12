@@ -1,6 +1,6 @@
 # RHODES · reproduction harnesses for the multi-window protections
 
-These are the two harnesses that prove the 1.3.12 Phase 3 follow-up (one writer
+These are the harnesses that prove the 1.3.12 Phase 3 follow-up (one writer
 at a time, and a back/forward-cache-restored window that must ask for the lease
 again). They live in the repository so the result can be re-run instead of
 taken on trust. They are not part of the build: Vite only bundles `src/`, and
@@ -9,6 +9,13 @@ nothing here is imported by the application.
 Everything runs against a **dedicated dev origin in an isolated browser
 profile** (a fresh temporary profile per launch). No harness can reach, reset or
 overwrite the records of a real RHODES installation.
+
+The harnesses run on Linux, macOS and Windows. They never use a fixed `/tmp`:
+build output and browser profiles go to the operating system's temporary
+directory (`os.tmpdir()` — `/tmp` on Linux, `/var/folders/...` on macOS,
+`%LOCALAPPDATA%\Temp` on Windows), in a directory whose name is unique per run,
+and it is deleted when the process exits. Paths are passed as values, never as
+shell-quoted strings, so a checkout under `C:\Users\Jane Doe\rhodes` works.
 
 ## 1 · Cross-tab lease, two stores over one storage cell (`cross-tab.mjs`)
 
@@ -21,8 +28,14 @@ that the no-Web-Locks fallback is honest.
 node qa/cross-tab.mjs
 ```
 
-Uses `esbuild` (already available through Vite's dependency tree) with the `@`
-alias pointing at `./src`, so run it from the repository root.
+The entry is bundled with `esbuild` (already available through Vite's
+dependency tree) and the `@` alias pointing at `src/`. esbuild's JavaScript API
+is used first, so no shell is involved and paths with spaces or backslashes need
+no quoting; if esbuild cannot be resolved as a module, the harness falls back to
+the native binary via `execFileSync` with an argument array.
+`RHODES_QA_ESBUILD=cli node qa/cross-tab.mjs` forces that fallback. The bundle is
+written to a private directory under `os.tmpdir()` and removed before the tests
+start — nothing is left behind, in the repository or elsewhere.
 
 ## 2 · Cross-tab lease in a real browser (`cross-tab-browser.cjs`)
 
@@ -37,6 +50,9 @@ npx vite --port 5193 --host 127.0.0.1 --strictPort
 # in another
 node qa/cross-tab-browser.cjs          # QA_PORT=5193 is the default
 ```
+
+On Windows, the PowerShell equivalent of this and of the other suites is in
+*Running all three*, below.
 
 ## 3 · Back/forward cache: a restored window must not write (`bfcache-browser.cjs`)
 
@@ -59,6 +75,9 @@ document — exactly the lie they exist to catch.
 node qa/bfcache-browser.cjs            # QA_PORT=5193 is the default
 ```
 
+On Windows, use the PowerShell form in *Running all three* (`$env:QA_PORT`,
+`$env:CHROME_PATH`).
+
 ### The one thing that is simulated, and why
 
 The Chromium available in this environment cannot enter the back/forward cache:
@@ -74,15 +93,67 @@ scenario R exercises a *real* navigation (where the browser fires its own
 `pagehide`) so the release-on-hide ordering and the fresh-boot path are covered
 without any simulation.
 
-## Chromium
+## Running all three
 
-`CHROME_PATH` selects a browser binary. Without it the harnesses use the Lambda
-build (`@sparticuz/chromium`) if it is installed, then `puppeteer.executablePath()`:
+Every suite reads `QA_PORT` (default `5193`). The two browser suites need a dev
+server on that port serving the repository; `cross-tab.mjs` needs only Node.
+
+### Linux / macOS (bash or zsh)
 
 ```bash
+node qa/cross-tab.mjs                       # 35 checks, no browser, ~5 s
+
+npx vite --port 5193 --host 127.0.0.1 --strictPort   # in its own terminal
+node qa/cross-tab-browser.cjs               # 24 checks
+node qa/bfcache-browser.cjs                 # 32 checks
+
+# a different port, if 5193 is taken
+QA_PORT=5200 node qa/bfcache-browser.cjs
+
+# an explicit browser
 CHROME_PATH=/usr/bin/google-chrome node qa/bfcache-browser.cjs
 ```
 
-`puppeteer-core` and `puppeteer` are already dependencies of this project;
-`@sparticuz/chromium` is only present in the environment these were written in
-(`npm i -D @sparticuz/chromium` if you want that path).
+### Windows (PowerShell)
+
+Run these from the repository root; `\` or `/` both work in the paths.
+
+```powershell
+node qa/cross-tab.mjs
+
+# in its own PowerShell window
+npx vite --port 5193 --host 127.0.0.1 --strictPort
+
+# in a second PowerShell window
+node qa/cross-tab-browser.cjs
+node qa/bfcache-browser.cjs
+
+# a different port, and an explicit browser
+$env:QA_PORT = "5200"
+$env:CHROME_PATH = "C:\Program Files\Google\Chrome\Application\chrome.exe"
+node qa/bfcache-browser.cjs
+```
+
+`$env:NAME = "value"` sets a variable for that PowerShell session
+(`Remove-Item Env:QA_PORT` clears it); in `cmd.exe` the equivalent is
+`set QA_PORT=5200`. If the browser cannot be found, the suites stop with
+puppeteer's `Could not find Chrome` — set `CHROME_PATH` as above.
+
+### Chromium
+
+Both browser suites drive `puppeteer-core`, which ships no browser of its own.
+The executable is resolved in this order:
+
+1. **`CHROME_PATH`** — any Chrome, Chromium or Edge binary you point at.
+2. **`@sparticuz/chromium`**, if it is installed (it is only present in the
+   Linux environment these were written in; `npm i -D @sparticuz/chromium`).
+3. **`puppeteer.executablePath()`** — the browser downloaded by the `puppeteer`
+   package, after `npx puppeteer browsers install chrome`.
+
+On Windows the usual locations are
+`C:\Program Files\Google\Chrome\Application\chrome.exe` and
+`C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`; Edge is
+Chromium and works. macOS: `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`.
+
+Both suites launch headless with `--no-sandbox`, which is what makes them work
+in containers; on a desktop Windows machine that flag is harmless.

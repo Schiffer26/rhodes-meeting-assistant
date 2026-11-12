@@ -5,7 +5,39 @@
 // used to lose records.
 //
 //   node qa/cross-tab-browser.cjs        (a dev server must be listening; QA_PORT, default 5193)
+//   Windows PowerShell: $env:QA_PORT = "5193"; node qa/cross-tab-browser.cjs
 const puppeteer = require("puppeteer-core");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+
+// ── A throwaway browser profile, in the platform's temporary directory ──
+//
+// A literal "/tmp" does not exist on Windows. `os.tmpdir()` is /tmp on Linux,
+// /var/folders/... on macOS and %LOCALAPPDATA%\Temp on Windows; `mkdtemp` adds a
+// unique suffix, so each run keeps the isolation these tests depend on — two
+// tabs share one storage area, and nothing else (another run, another checkout,
+// a real RHODES window) can see it. The directory is removed when the process
+// ends, including on Ctrl+C and on a failed run.
+const profiles = [];
+const makeProfileDir = (prefix) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  profiles.push(dir);
+  return dir;
+};
+const removeProfileDirs = () => {
+  for (const dir of profiles.splice(0)) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // Windows can keep handles to a profile that was just closed; the
+      // directory lives in the OS temp area, so leaving it is harmless.
+    }
+  }
+};
+process.on("exit", removeProfileDirs);
+process.on("SIGINT", () => { removeProfileDirs(); process.exit(130); });
+process.on("SIGTERM", () => { removeProfileDirs(); process.exit(143); });
 
 /** Chromium: $CHROME_PATH, else the bundled Lambda build, else puppeteer's own. */
 async function launchOptions() {
@@ -44,7 +76,7 @@ const describe = (raw) => {
 (async () => {
   const browser = await puppeteer.launch({
     ...(await launchOptions()),
-    userDataDir: `/tmp/qa-crosstab-profile-${Date.now()}`,
+    userDataDir: makeProfileDir("qa-crosstab-profile-"),
   });
 
   const openTab = async (query = "") => {
@@ -259,6 +291,7 @@ const describe = (raw) => {
   check("H6 the owner stays writable", !(await bannerVisible(B2)));
 
   await browser.close();
+  removeProfileDirs();
   const failures = results.filter((r) => r.startsWith("FAIL"));
   console.log(`\n${results.length - failures.length}/${results.length} passed`);
   process.exit(failures.length ? 1 : 0);
