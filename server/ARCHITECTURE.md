@@ -443,10 +443,15 @@ office, verify on the actual Windows host:
    has not been performed — only the equivalent-text test on one machine.
 10. Date/time and agenda-relationship triggers under the Windows build of SQLite
     (same version, 3.54.1, but confirm `date()`/`strftime()` behave identically).
-11. **Windows permission semantics.** The fail-closed path resolver maps `EACCES` /
-    `EPERM` to `config.data_dir_unresolvable`. Node surfaces Windows ACL denials through
-    the same errno values, but only Linux has been exercised here — confirm with a
-    directory whose ACL denies the service account.
+11. **Windows permission semantics (manual deployment check).** The fail-closed path
+    resolver maps `EACCES` / `EPERM` to `config.data_dir_unresolvable`. Node surfaces
+    Windows ACL denials through the same errno values, but only Linux has been exercised
+    here. The automated test for this deliberately **skips on Windows**: it denies access
+    with `chmod`, and Node does not implement Unix permission bits on Windows, so it
+    cannot simulate an ACL denial. Verify by hand instead — create a folder whose ACL
+    denies the service account (for example `icacls D:\RHODES-denied /deny "SERVICE
+    ACCOUNT:(OI)(CI)(F)"`), point `RHODES_DATA_DIR` inside it, and confirm the service
+    exits with `config.data_dir_unresolvable` and creates nothing.
 12. **REPLACE protection on Windows.** `PRAGMA recursive_triggers` is a connection-level
     SQLite setting, identical on every platform, but the `INSERT OR REPLACE` refusal has
     only been demonstrated on Linux.

@@ -242,13 +242,29 @@ function caughtConfigError(fn: () => unknown): ConfigError {
 }
 
 test('an inaccessible ancestor is refused, not treated as a missing component', (t) => {
+  // Unix-only by construction. This test denies access with chmod, and Node does not
+  // implement Unix permission bits on Windows — there, access is decided by ACLs that
+  // chmod cannot express. Running it there would pass or fail for reasons unrelated to
+  // the code under test, so it is skipped explicitly instead of pretending to cover the
+  // Windows case. The Windows ACL denial remains a manual deployment check; see
+  // ARCHITECTURE.md §12.
+  if (process.platform === 'win32') {
+    t.skip(
+      'chmod cannot simulate a Windows ACL denial — Windows access control is not stored in Unix permission bits. ' +
+        'Verify the EACCES/EPERM path manually with a folder ACL that denies the service account (ARCHITECTURE.md §12).',
+    );
+    return;
+  }
+  if (process.getuid?.() === 0) {
+    t.skip('running as root: directory permissions are not enforced');
+    return;
+  }
+
+  // The skip checks sit above the setup on purpose: chmod on a directory that was never
+  // created would throw from the cleanup block and turn a skip into a failure.
   const base = tempDataDir();
   const locked = path.join(base, 'locked');
   try {
-    if (process.getuid?.() === 0) {
-      t.skip('running as root: directory permissions are not enforced');
-      return;
-    }
     mkdirSync(locked, { recursive: true });
     chmodSync(locked, 0o000);
 
