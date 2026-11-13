@@ -128,10 +128,10 @@ test('a meeting takes its own dependent rows with it, and nothing else', () => {
         .prepare('insert into meeting_attendees (meeting_id, person_id) values (?, ?)')
         .run(meetingId, personId);
       db.handle.prepare('insert into meeting_notes (meeting_id, content) values (?, ?)').run(meetingId, 'Minuted.');
-      db.handle
-        .prepare('insert into note_revisions (meeting_id, revision_no, content) values (?, 1, ?)')
-        .run(meetingId, 'Minuted.');
 
+      // No note revisions here: since migration 0002 a meeting that has revision
+      // history refuses hard deletion entirely (see integrity.test.ts). This test
+      // covers the cascade for the rows that are safe to remove with the meeting.
       db.handle.prepare('delete from meetings where id = ?').run(meetingId);
 
       const attendees = db.handle.prepare('select count(*) as n from meeting_attendees').get() as { n: number };
@@ -207,13 +207,16 @@ test('impossible records are rejected by CHECK constraints', () => {
         (error: unknown) => isSqliteConstraint(error, 'CHECK'),
       );
 
-      // A malformed date.
+      // A malformed date. 0001's CHECK rejects the shape; migration 0002's trigger
+      // rejects a well-shaped date that does not exist (see integrity.test.ts), so
+      // either layer may answer here.
       assert.throws(
         () =>
           db.handle
             .prepare('insert into meetings (title, meeting_date) values (?, ?)')
             .run('Bad date', '11/03/2026'),
-        (error: unknown) => isSqliteConstraint(error, 'CHECK'),
+        (error: unknown) =>
+          isSqliteConstraint(error, 'CHECK') || /real calendar date/.test(String(error)),
       );
 
       // An unknown attendance state.
@@ -274,7 +277,7 @@ test('case 8: closing and reopening preserves committed records and the schema v
 
     const second = openDatabase(config);
     try {
-      assert.equal(second.schemaVersion(), 1);
+      assert.equal(second.schemaVersion(), 2);
       const person = second.handle.prepare('select full_name from personnel where id = ?').get(personId) as
         | { full_name: string }
         | undefined;

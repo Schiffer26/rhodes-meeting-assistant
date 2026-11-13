@@ -1,0 +1,4 @@
+# Migration checksums are computed over LF-normalised text (server/src/db/migrate.ts),
+# so the SQL must be checked out with LF on every platform. Without this, Windows
+# checkouts get CRLF and the same migration would hash differently per platform.
+*.sql text eol=lf

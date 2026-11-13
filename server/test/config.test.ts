@@ -6,11 +6,11 @@
  */
 
 import assert from 'node:assert/strict';
-import { existsSync, writeFileSync } from 'node:fs';
+import { mkdirSync, existsSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 
-import { loadConfig } from '../src/config.js';
+import { loadConfig, resolveRealPath } from '../src/config.js';
 import { ConfigError } from '../src/errors.js';
 import { removeDir, tempDataDir } from './helpers.js';
 
@@ -117,4 +117,115 @@ test('production requires ProgramData unless the data directory is explicit', ()
     `unexpected data directory: ${config.dataDir}`,
   );
   assert.ok(config.dataDir.includes('ProgramData'), config.dataDir);
+});
+
+// ── reparse points: symbolic links (and, on Windows, junctions) ─────────────
+//
+// A configured path can look perfectly local and still lead somewhere unsafe: a
+// directory symlink or a Windows junction. These tests prove the *resolved* target is
+// what gets checked. Junctions are Windows-only and are NOT covered here — see the
+// Windows checklist in ARCHITECTURE.md.
+
+function makeSymlink(target: string, linkPath: string): boolean {
+  try {
+    symlinkSync(target, linkPath, process.platform === 'win32' ? 'junction' : 'dir');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+test('a data directory reached through a link into a synced folder is refused', (t) => {
+  const base = tempDataDir();
+  try {
+    const synced = path.join(base, 'OneDrive', 'RHODES');
+    mkdirSync(synced, { recursive: true });
+    const link = path.join(base, 'local-looking-data');
+    if (!makeSymlink(synced, link)) {
+      t.skip('symbolic links are not supported in this environment');
+      return;
+    }
+
+    // The link itself exists and is a directory…
+    expectConfigError(() => loadConfig({ RHODES_DATA_DIR: link }), 'config.data_dir_synced_folder');
+    // …and a directory that would be created underneath it does not exist yet.
+    expectConfigError(
+      () => loadConfig({ RHODES_DATA_DIR: path.join(link, 'data') }),
+      'config.data_dir_synced_folder',
+    );
+
+    // Nothing may be created while refusing.
+    assert.equal(existsSync(path.join(synced, 'data')), false);
+  } finally {
+    removeDir(base);
+  }
+});
+
+test('a link chain into a synced folder is refused at the end of the chain', (t) => {
+  const base = tempDataDir();
+  try {
+    const synced = path.join(base, 'Dropbox', 'RHODES');
+    mkdirSync(synced, { recursive: true });
+    const hop = path.join(base, 'hop');
+    const link = path.join(base, 'final');
+    if (!makeSymlink(synced, hop) || !makeSymlink(hop, link)) {
+      t.skip('symbolic links are not supported in this environment');
+      return;
+    }
+    expectConfigError(() => loadConfig({ RHODES_DATA_DIR: link }), 'config.data_dir_synced_folder');
+  } finally {
+    removeDir(base);
+  }
+});
+
+test('a link to an ordinary local directory is accepted and is not rewritten', (t) => {
+  const base = tempDataDir();
+  try {
+    const real = path.join(base, 'plain', 'nested');
+    mkdirSync(real, { recursive: true });
+    const link = path.join(base, 'alias');
+    if (!makeSymlink(real, link)) {
+      t.skip('symbolic links are not supported in this environment');
+      return;
+    }
+
+    const configured = path.join(link, 'data');
+    const config = loadConfig({ RHODES_DATA_DIR: configured });
+    // The configured path is kept; an accepted path is never silently redirected.
+    assert.equal(config.dataDir, path.resolve(configured));
+  } finally {
+    removeDir(base);
+  }
+});
+
+test('a link loop is refused as unresolvable rather than guessed at', (t) => {
+  const base = tempDataDir();
+  try {
+    const a = path.join(base, 'loop-a');
+    const b = path.join(base, 'loop-b');
+    if (!makeSymlink(b, a) || !makeSymlink(a, b)) {
+      t.skip('symbolic links are not supported in this environment');
+      return;
+    }
+    expectConfigError(
+      () => loadConfig({ RHODES_DATA_DIR: path.join(a, 'data') }),
+      'config.data_dir_unresolvable',
+    );
+  } finally {
+    removeDir(base);
+  }
+});
+
+test('resolveRealPath resolves the nearest existing ancestor and keeps the tail', () => {
+  const base = tempDataDir();
+  try {
+    const target = path.join(base, 'not', 'created', 'yet');
+    const resolved = resolveRealPath(target);
+    assert.ok(resolved.endsWith(path.join('not', 'created', 'yet')), resolved);
+    assert.ok(path.isAbsolute(resolved));
+    // An existing directory resolves to itself.
+    assert.equal(resolveRealPath(base), resolveRealPath(base));
+  } finally {
+    removeDir(base);
+  }
 });

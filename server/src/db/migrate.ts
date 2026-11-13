@@ -55,8 +55,26 @@ interface AppliedRow {
   applied_at: string;
 }
 
-function checksumOf(text: string): string {
-  return createHash('sha256').update(text, 'utf8').digest('hex');
+/**
+ * Normalise line endings before hashing or executing SQL.
+ *
+ * Git checks out text with CRLF on Windows when `.gitattributes` is absent or a
+ * repository predates it, and appends a different byte stream for the same statement.
+ * Hashing raw bytes would then make an identical migration look "edited" on one
+ * platform and pristine on the other, refusing startup for no reason. LF is the single
+ * canonical form (enforced for `*.sql` by `.gitattributes`); normalising here means a
+ * checksum written on Windows verifies on Linux and vice versa.
+ */
+export function normaliseNewlines(sql: string): string {
+  return sql.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+}
+
+/**
+ * Checksum of a migration's *content*, independent of checkout line endings.
+ * SHA-256 over the normalised UTF-8 text.
+ */
+export function checksumOf(text: string): string {
+  return createHash('sha256').update(normaliseNewlines(text), 'utf8').digest('hex');
 }
 
 export function loadMigrationFiles(migrationsDir: string): MigrationFile[] {
@@ -87,7 +105,9 @@ export function loadMigrationFiles(migrationsDir: string): MigrationFile[] {
     }
     seen.set(version, entry);
     const filePath = path.join(migrationsDir, entry);
-    const sql = readFileSync(filePath, 'utf8');
+    // Read and normalise once: the recorded checksum and the executed statement come
+    // from the same normalised text, so the two can never disagree.
+    const sql = normaliseNewlines(readFileSync(filePath, 'utf8'));
     files.push({ version, name, filePath, checksum: checksumOf(sql) });
   }
 
@@ -151,7 +171,7 @@ export function runMigrations(
   for (const file of files) {
     if (appliedVersions.has(file.version)) continue;
 
-    const sql = readFileSync(file.filePath, 'utf8');
+    const sql = normaliseNewlines(readFileSync(file.filePath, 'utf8'));
     // One transaction per migration: short, and atomic with its bookkeeping row.
     const apply = db.transaction(() => {
       db.exec(sql);

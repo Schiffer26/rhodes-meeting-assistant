@@ -37,7 +37,8 @@ server/
 │   │   ├── index.ts             ← the only place that opens the database
 │   │   ├── migrate.ts           ← migration runner (idempotent, checksummed)
 │   │   └── migrations/
-│   │       └── 0001-initial-schema.sql
+│   │       ├── 0001-initial-schema.sql
+│   │       └── 0002-integrity-hardening.sql
 │   └── cli/
 │       └── migrate.ts           ← `npm run migrate`, `--status`
 └── test/
@@ -85,7 +86,7 @@ structured error code; it never leaves a half-initialised database behind.
 | `NODE_ENV` | `development` | `development` \| `test` \| `production` |
 | `RHODES_HOST` | `127.0.0.1` | Loopback only (`127.0.0.1`, `::1`; `localhost` is normalised). Anything else is refused. |
 | `RHODES_PORT` | `4317` | 0–65535 |
-| `RHODES_DATA_DIR` | dev: `<repo>/.local-data` · prod: `%ProgramData%\RHODES\data` | Not a UNC share, not a cloud-synced folder, not an existing file |
+| `RHODES_DATA_DIR` | dev: `<repo>/.local-data` · prod: `%ProgramData%\RHODES\data` | Not a UNC share, not a cloud-synced folder *after resolution*, not an existing file |
 | `RHODES_DB_FILE` | `rhodes.db` | Plain file name ending in `.db`; no directories |
 | `RHODES_BUSY_TIMEOUT_MS` | `5000` | Milliseconds a writer waits for the lock |
 | `RHODES_LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` |
@@ -94,7 +95,31 @@ Refusal codes: `config.non_loopback_host`, `config.invalid_port`,
 `config.invalid_busy_timeout`, `config.invalid_database_file`,
 `config.programdata_unavailable`, `config.data_dir_network_share`,
 `config.data_dir_synced_folder`, `config.data_dir_not_a_directory`,
-`config.data_dir_uncreatable`.
+`config.data_dir_uncreatable`, `config.data_dir_unresolvable`.
+
+### Path resolution (symbolic links and Windows junctions)
+
+Checking the configured string is not enough: a directory that looks local can be a
+symbolic link or a Windows junction pointing into a synchronised folder or at a network
+share. `resolveDataDir` therefore resolves the path before accepting it.
+
+1. The value as typed is checked for UNC form first, because `path.resolve` collapses a
+   leading `\\server\share` on POSIX and would hide it.
+2. The absolute path is checked for UNC form, synchronised-folder segments and
+   "exists but is a file".
+3. The path is then **resolved to its real location**: the nearest existing ancestor is
+   resolved with `realpathSync.native` (which follows symlinks and junctions) and the
+   not-yet-created segments are appended. On Windows the `\\?\` long-path prefix is
+   folded back, and `\\?\UNC\server\share` becomes `\\server\share` — otherwise the
+   extended form would slip past the network-share check.
+4. The same UNC and synchronised-folder rules run again against the resolved target.
+
+A refused path is never redirected to somewhere "safe"; the service exits with a
+configuration error, because quietly writing a database to a different location than the
+operator configured is worse than not starting. Nothing is created before validation
+succeeds, so a refused configuration leaves no directory behind. An entry that exists but
+cannot be resolved (broken link, link loop) is rejected as
+`config.data_dir_unresolvable` rather than being treated as "does not exist yet".
 
 ---
 
@@ -109,10 +134,16 @@ synchronise a half-written `-wal`.
 
 Therefore:
 
-- UNC paths and cloud-synced folders are rejected at startup (`config.data_dir_*`).
-- A **mapped network drive** (`Z:\RHODES`) cannot be recognised from Node. Keep the
-  production data directory on the system drive (the default `%ProgramData%\RHODES\data`
-  is correct); do not remap it to a share.
+- UNC paths and cloud-synced folders are rejected at startup (`config.data_dir_*`),
+  including when they are reached indirectly through a symbolic link or junction (see
+  §3).
+- A **mapped network drive** (`Z:\RHODES`) is **not detected**. `Z:` is a drive letter
+  to the operating system, and the fact that it maps to `\\fileserver\share` is not
+  visible to a process resolving paths. This remains an operational restriction, not a
+  solved problem: keep the production data directory on the system drive (the default
+  `%ProgramData%\RHODES\data` is correct) and do not remap or `subst` it.
+- Symbolic-link and junction traversal **is** covered by tests on Linux; the
+  Windows-junction path is not yet exercised on Windows (§12).
 - Backups are copies of the *whole* directory (`rhodes.db` plus `-wal`/`-shm`) taken
   while the service is stopped, or `VACUUM INTO` — never a file-level copy of a live
   database.
@@ -141,7 +172,7 @@ Transactions are kept short: one write per HTTP request, wrapped in
 
 ---
 
-## 6 · Schema (migration 0001)
+## 6 · Schema (migrations 0001 and 0002)
 
 | Table | Purpose |
 | --- | --- |
@@ -150,7 +181,7 @@ Transactions are kept short: one write per HTTP request, wrapped in
 | `meeting_attendees` | One row per participant — invited flag and attendance state (`invited`/`present`/`absent`/`excused`). |
 | `agenda_items` | Ordered agenda topics with presenter, estimate and discussion status. |
 | `meeting_notes` | The note document for a meeting (1:1). |
-| `note_revisions` | Append-only history of every accepted note save. `UPDATE` is refused by trigger. |
+| `note_revisions` | Append-only history of every accepted note save. `UPDATE` and `DELETE` are refused by trigger. |
 | `decisions` | Decisions, optionally tied to an agenda item, with approval status. |
 | `action_items` | Follow-ups with assignee, due date, priority and status. |
 | `audit_records` | Who did what, when. `actor` is a placeholder for the account id added later. |
@@ -161,9 +192,17 @@ Modelling rules encoded in the SQL:
 - Every mutable table carries `row_version` (starts at 1) plus `created_at`/`updated_at`
   (UTC ISO-8601). `row_version` is the basis of optimistic concurrency later; the API
   increments it inside the transaction, never a trigger.
-- Every table has a `public_id` (opaque) so ids can appear in URLs without exposing
-  row numbers. `legacy_id` is reserved for the controlled import of existing browser
-  records — that import does not exist yet, and no browser data has been read.
+- **Identifiers are not uniform, and the schema should be described as it is.** The
+  *entity* tables — `personnel`, `meetings`, `agenda_items`, `decisions`,
+  `action_items` — carry an opaque `public_id` (16 random bytes, hex) so an id can
+  appear in a URL or an export without exposing a row number, plus a nullable
+  `legacy_id` reserved for the controlled import of existing browser records (that
+  import does not exist yet, and no browser data has been read). The remaining tables
+  do not have one, because they are not addressed individually: `meeting_attendees`
+  is identified by its composite key `(meeting_id, person_id)`; `meeting_notes` by its
+  `meeting_id` primary key; `note_revisions` by `(meeting_id, revision_no)`;
+  `audit_records` and `schema_migrations` use their integer key, and neither is ever
+  addressed by a client.
 - **No silent cascade from history.** References to people are `ON DELETE RESTRICT`:
   a person with attendance, notes, decisions or assigned actions cannot be deleted at
   all. Meeting-owned rows (attendees, agenda, notes, revisions, decisions, actions)
@@ -179,11 +218,67 @@ Modelling rules encoded in the SQL:
   schema. They stay per workstation: one person's theme change must never repaint
   another person's screen.
 
+### Integrity rules added by migration 0002
+
+`0001` is applied and immutable, so every additional rule lives in
+`0002-integrity-hardening.sql` as a trigger (`19` of them). SQLite cannot add a `CHECK`
+to an existing table, and rebuilding tables that already carry foreign keys would be
+more dangerous than the problem it solves.
+
+**Real calendar dates and clock times.** `0001`'s `GLOB` checks prove a value *looks*
+like `YYYY-MM-DD`. They cannot prove it exists — SQLite normalises impossible values
+instead of rejecting them (`date('2025-02-29')` → `'2025-03-01'`,
+`date('2026-04-31')` → `'2026-05-01'`, `strftime('%H:%M','24:00')` → `'00:00'`). The
+rule is therefore equality against the normalised form: `date(x) IS NOT x` and
+`strftime('%H:%M', x) IS NOT x` reject a value unless it survives normalisation
+unchanged. `IS NOT` is used because it is null-safe — `NULL != '2026-13-01'` is `NULL`,
+which a `WHERE`/`WHEN` clause would treat as false and let through.
+
+| Column | Rule |
+| --- | --- |
+| `meetings.meeting_date` | required; a real calendar date (leap days honoured: `2024-02-29` yes, `2025-02-29` no) |
+| `meetings.next_meeting_date` | `NULL`, empty, or a real calendar date |
+| `meetings.start_time`, `meetings.end_time` | empty, or a real 24-hour time (`00:00`–`23:59`; `24:00` and `12:60` rejected) |
+| `decisions.decision_date` | empty, or a real calendar date |
+| `action_items.due_date` | empty, or a real calendar date |
+
+The triggers fire on `INSERT` and on `UPDATE OF <that column>`. Validating only the
+touched column matters: a database created before 0002 may already hold a value that
+0001 accepted, and that row must remain editable (soft-deletable, re-titled) — only a
+change *to the bad value itself* is refused.
+
+**Agenda links cannot cross meetings.** `decisions.agenda_item_id` and
+`action_items.agenda_item_id` must reference an agenda item belonging to the same
+`meeting_id` as the record. `0001`'s foreign key only proves the agenda item exists.
+Triggers reject: a cross-meeting link on insert, a cross-meeting link created by an
+update (changing either the record's meeting or its agenda item), and moving an agenda
+item to another meeting while a decision or action item in the old meeting still links
+to it. Detaching a link (`agenda_item_id = NULL`) is always allowed, and an agenda item
+with no links may move freely. The check ignores `deleted_at` on purpose: a soft-deleted
+decision is still history, so the relationship must remain valid.
+
+**Note revision history cannot be destroyed.** A revision cannot be updated (`0001`)
+or deleted individually (`0002`), and a meeting that has any revision history cannot be
+hard-deleted at all — ordinary `DELETE` is refused with a message pointing at
+`deleted_at`. Soft deletion never touches revisions, and new revisions can always be
+appended. Meetings without history remain hard-deletable, along with their dependent
+rows.
+
+> **Permanent purging is deliberately unimplemented.** Should a meeting's history ever
+> have to be destroyed for a legal or operational reason, that must be an explicit,
+> separately reviewed administrative procedure with its own audit trail — not an
+> ordinary delete statement, and not something this service offers today.
+
 ### Migration procedure
 
-1. Add a new file to `src/db/migrations/`: `0002-<what-it-does>.sql` (four-digit
+1. Add a new file to `src/db/migrations/`: `0003-<what-it-does>.sql` (four-digit
    version, kebab-case name). Never edit an applied file — the checksum check refuses
    to start if you do, precisely so the schema and the source cannot drift apart.
+   Line endings do not count as an edit: checksums are computed over **LF-normalised**
+   text (`normaliseNewlines` in `src/db/migrate.ts`), and `.gitattributes` enforces
+   `*.sql text eol=lf`, so a Windows checkout and a Linux checkout of the same
+   migration hash identically. Changing a statement, a comment or whitespace inside a
+   line still changes the checksum, exactly as before.
 2. Write forward-only SQL. If a migration fails, its transaction rolls back and the
    previous version stays intact; fix the file and run again.
 3. Apply: `npm run server:migrate` (or just start the service — migrations run at
@@ -306,3 +401,14 @@ office, verify on the actual Windows host:
 6. `Ctrl+C` exits cleanly and leaves no `-wal` file behind; a restart keeps records.
 7. Task Scheduler / service wrapper behaviour: automatic restart, log capture, and
    correct exit codes on configuration failure.
+8. **Junction tests (LAN-1.1, not yet run on Windows).** `mklink /J C:\RHODES-data
+   "%OneDrive%\RHODES"` then starting with `RHODES_DATA_DIR=C:\RHODES-data` must exit
+   with `config.data_dir_synced_folder`. The Linux symlink tests prove the logic; the
+   Windows junction path itself (`realpathSync.native` →
+   `GetFinalPathNameByHandle`) has not been executed here.
+9. Migration checksum portability across platforms: a database created on Windows must
+   verify its checksums on Linux and vice versa. `*.sql` is pinned to LF by
+   `.gitattributes` and checksums are LF-normalised, but the cross-platform round trip
+   has not been performed — only the equivalent-text test on one machine.
+10. Date/time and agenda-relationship triggers under the Windows build of SQLite
+    (same version, 3.54.1, but confirm `date()`/`strftime()` behave identically).

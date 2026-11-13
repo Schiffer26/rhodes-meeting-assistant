@@ -11,7 +11,7 @@
  *   · the database lives on host-local disk — never a UNC share, never a synced folder.
  */
 
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -132,6 +132,66 @@ function defaultDataDir(nodeEnv: NodeEnv, env: EnvSource): string {
   return path.join(programData, 'RHODES', 'data');
 }
 
+/**
+ * Resolve a configured path to the location the operating system would actually use,
+ * following symbolic links and Windows junctions.
+ *
+ * A path that does not exist yet is the normal case for a first run, so the nearest
+ * existing ancestor is resolved and the remaining segments are appended unchanged.
+ * This is what makes the check meaningful: a junction at C:\RHODES makes
+ * `C:\RHODES\data` look local while the bytes really live somewhere else.
+ *
+ * Throws if the existing ancestor cannot be resolved (for example a symlink loop).
+ */
+export function resolveRealPath(target: string): string {
+  const resolved = path.resolve(target);
+  let probe = resolved;
+  const tail: string[] = [];
+
+  for (;;) {
+    if (existsSync(probe)) {
+      const real = stripWindowsLongPathPrefix(realpathSync.native(probe));
+      return tail.length === 0 ? real : path.join(real, ...tail);
+    }
+
+    // `existsSync` follows links, so it reports false both for "not created yet" and for
+    // "exists but leads nowhere" (broken link, link loop). Those two are not the same:
+    // the first is normal, the second means the real location is unknowable. `lstat`
+    // sees the directory entry itself and separates them.
+    let entryExists = false;
+    try {
+      lstatSync(probe);
+      entryExists = true;
+    } catch {
+      entryExists = false;
+    }
+    if (entryExists) {
+      throw new Error(
+        `"${path.basename(probe)}" exists but cannot be resolved to a real location (broken link or link loop)`,
+      );
+    }
+
+    const parent = path.dirname(probe);
+    // Reached a root (or a drive) without finding anything that exists.
+    if (parent === probe) return resolved;
+    tail.unshift(path.basename(probe));
+    probe = parent;
+  }
+}
+
+/**
+ * `realpathSync.native` returns extended-length paths on Windows (`\\?\C:\...`,
+ * `\\?\UNC\server\share\...`). Left alone, the UNC form would evade the network
+ * share check — precisely the laundering this file exists to prevent — and the drive
+ * form would confuse the synced-folder heuristics. Fold both back to the form an
+ * operator recognises.
+ */
+export function stripWindowsLongPathPrefix(target: string): string {
+  if (/^\\\\\?\\UNC\\/i.test(target)) return '\\\\' + target.slice(8);
+  if (/^\\\\\?\\/i.test(target)) return target.slice(4);
+  return target;
+}
+
 /** Reject UNC paths (`\\\\server\\share`, `//server/share`) outright. */
 export function isNetworkSharePath(target: string): boolean {
   return /^[\\/]{2}/.test(target);
@@ -202,6 +262,42 @@ function resolveDataDir(raw: string | undefined, nodeEnv: NodeEnv, env: EnvSourc
     throw new ConfigError(
       'config.data_dir_not_a_directory',
       'RHODES_DATA_DIR points at an existing file, not a directory. Refusing to start.',
+    );
+  }
+
+  // Finally, check where the path really leads. The string checks above can be satisfied
+  // by a directory that is actually a symbolic link or a Windows junction, so resolve
+  // the nearest existing ancestor (the leaf usually does not exist on a first run) and
+  // re-run the same rules against the real location. The configured path is NOT
+  // rewritten — an unsafe location is refused, never silently redirected.
+  let real: string;
+  try {
+    real = stripWindowsLongPathPrefix(resolveRealPath(absolute));
+  } catch (error) {
+    throw new ConfigError(
+      'config.data_dir_unresolvable',
+      'RHODES_DATA_DIR could not be resolved to a real location on this computer. ' +
+        'A broken link, a permission problem, or a symbolic-link loop makes the target unknowable, so the service will not start.',
+      { reason: error instanceof Error ? error.message : String(error) },
+    );
+  }
+
+  if (isNetworkSharePath(real)) {
+    throw new ConfigError(
+      'config.data_dir_network_share',
+      'RHODES_DATA_DIR resolves to a network share through a link or junction. ' +
+        'The database must live on the host computer\'s local disk. Refusing to start.',
+      { resolved: real },
+    );
+  }
+
+  if (isSyncedFolderPath(real, env)) {
+    throw new ConfigError(
+      'config.data_dir_synced_folder',
+      'RHODES_DATA_DIR resolves into a cloud-synchronised folder (OneDrive, Dropbox, ' +
+        'Google Drive, SharePoint) through a link or junction. A sync client can copy a ' +
+        'half-written database and corrupt it. Refusing to start.',
+      { resolved: real },
     );
   }
 

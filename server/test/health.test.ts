@@ -47,7 +47,7 @@ test('case 1 + 2: the service starts and /api/health reports service and databas
       service: SERVICE_NAME,
       version: SERVICE_VERSION,
       apiVersion: 1,
-      database: { status: 'ok', schemaVersion: 1 },
+      database: { status: 'ok', schemaVersion: 2 },
       uptimeSeconds: 42,
     });
   } finally {
