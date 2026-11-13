@@ -11,7 +11,7 @@ import test from 'node:test';
 import { createApp } from '../src/app.js';
 import { startServer } from '../src/server.js';
 import { SERVICE_NAME, SERVICE_VERSION } from '../src/version.js';
-import { openMigrated, removeDir, startTestServer, tempDataDir } from './helpers.js';
+import { LATEST_SCHEMA_VERSION, openMigrated, removeDir, startTestServer, tempDataDir } from './helpers.js';
 
 /** Recursively collect every key and string value in a JSON value. */
 function collect(value: unknown, keys: string[] = [], strings: string[] = []): { keys: string[]; strings: string[] } {
@@ -47,7 +47,7 @@ test('case 1 + 2: the service starts and /api/health reports service and databas
       service: SERVICE_NAME,
       version: SERVICE_VERSION,
       apiVersion: 1,
-      database: { status: 'ok', schemaVersion: 2 },
+      database: { status: 'ok', schemaVersion: LATEST_SCHEMA_VERSION },
       uptimeSeconds: 42,
     });
   } finally {

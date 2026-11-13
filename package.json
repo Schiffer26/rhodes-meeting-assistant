@@ -15,7 +15,9 @@
     "server:build": "npm --prefix server run build",
     "server:test": "npm --prefix server run test",
     "server:typecheck": "npm --prefix server run typecheck",
-    "server:migrate": "npm --prefix server run migrate"
+    "server:migrate": "npm --prefix server run migrate",
+    "server:admin:bootstrap": "npm --prefix server run admin:bootstrap",
+    "server:admin:reset": "npm --prefix server run admin:reset"
   },
   "dependencies": {
     "@fontsource/jetbrains-mono": "^5.3.0",

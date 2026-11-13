@@ -12,7 +12,15 @@ import test from 'node:test';
 
 import { DatabaseError } from '../src/errors.js';
 import { openDatabase } from '../src/db/index.js';
-import { insertMeeting, insertPersonnel, migratedConfig, openMigrated, removeDir, tempDataDir } from './helpers.js';
+import {
+  insertMeeting,
+  insertPersonnel,
+  LATEST_SCHEMA_VERSION,
+  migratedConfig,
+  openMigrated,
+  removeDir,
+  tempDataDir,
+} from './helpers.js';
 
 /**
  * better-sqlite3 maps SQLite result codes onto `code`, but the exact extended code
@@ -280,7 +288,7 @@ test('case 8: closing and reopening preserves committed records and the schema v
 
     const second = openDatabase(config);
     try {
-      assert.equal(second.schemaVersion(), 2);
+      assert.equal(second.schemaVersion(), LATEST_SCHEMA_VERSION);
       const person = second.handle.prepare('select full_name from personnel where id = ?').get(personId) as
         | { full_name: string }
         | undefined;

@@ -1,13 +1,14 @@
-# RHODES API — architecture (phase LAN-1)
+# RHODES API — architecture (phases LAN-1 and LAN-2)
 
 The shared backend foundation for RHODES: one service, one SQLite database, one
 writer. This document describes what exists today, why it is shaped this way, and what
 is deliberately still missing.
 
-> **Status.** This is a foundation, not a finished multi-user application. The service
-> binds to loopback only, has no accounts, no authorisation, and no data endpoints
-> other than a health check. The React application in `src/` is unchanged and still
-> stores its data in the browser.
+> **Status.** The service has accounts, sessions and role-based authorisation
+> (LAN-2), but still binds to loopback only and serves no business data: health,
+> authentication and account administration are the whole HTTP surface. The React
+> application in `src/` is unchanged, has no login screen, and still stores its data in
+> the browser.
 
 ---
 
@@ -24,29 +25,52 @@ server/
 │   └── copy-migrations.mjs      ← copies *.sql into dist/ after every build
 ├── src/
 │   ├── index.ts                 ← process entry: config → db → migrations → listen
-│   ├── app.ts                   ← Express app (one route, no CORS, no body parser)
+│   ├── app.ts                   ← Express app: health + /api/auth + /api/admin (no CORS)
 │   ├── server.ts                ← HTTP listener lifecycle + graceful close
 │   ├── config.ts                ← every environment rule, validated before any I/O
 │   ├── errors.ts                ← AppError taxonomy (code / httpStatus / exposure)
 │   ├── logger.ts                ← one JSON object per line
 │   ├── version.ts               ← service identity reported by /api/health
 │   ├── http/
-│   │   ├── health.ts            ← GET /api/health
-│   │   └── middleware.ts        ← request ids, request log, 404, error handler
+│   │   ├── health.ts            ← GET /api/health (public)
+│   │   ├── middleware.ts        ← request ids, request log, 404, error handler
+│   │   ├── respond.ts           ← error envelope + no-store helper
+│   │   ├── authRoutes.ts        ← /api/auth: login, logout, me, change-password
+│   │   └── adminRoutes.ts       ← /api/admin/accounts: list, create, patch, reset
+│   ├── auth/
+│   │   ├── accounts.ts          ← account repository; every rule enforced in one transaction
+│   │   ├── audit.ts             ← audit trail writer (redacting, never throws)
+│   │   ├── errors.ts            ← the closed set of auth error codes
+│   │   ├── middleware.ts        ← bearer parsing, requireAuth/requireRole/password gate
+│   │   ├── password.ts          ← scrypt hashing, format, verification, bounded queue
+│   │   ├── policy.ts            ← username and password policy, normalisation
+│   │   ├── rateLimit.ts         ← login throttling per account and per address
+│   │   └── sessions.ts          ← token issuance, lookup, revocation, cleanup
 │   ├── db/
 │   │   ├── index.ts             ← the only place that opens the database
 │   │   ├── migrate.ts           ← migration runner (idempotent, checksummed)
 │   │   └── migrations/
 │   │       ├── 0001-initial-schema.sql
-│   │       └── 0002-integrity-hardening.sql
+│   │       ├── 0002-integrity-hardening.sql
+│   │       └── 0003-authentication.sql
 │   └── cli/
-│       └── migrate.ts           ← `npm run migrate`, `--status`
+│       ├── migrate.ts           ← `npm run migrate`, `--status`
+│       ├── admin.ts             ← `npm run server:admin:bootstrap` / `:reset`
+│       └── prompt.ts            ← hidden password entry; refuses without a terminal
 └── test/
     ├── helpers.ts               ← temp data dirs, ephemeral ports, fixtures
+    ├── auth-helpers.ts          ← cheap-cost account fixtures, HTTP helpers
     ├── config.test.ts
     ├── database.test.ts
     ├── health.test.ts
-    └── migrations.test.ts
+    ├── integrity.test.ts
+    ├── migrations.test.ts
+    ├── auth-migrations.test.ts  ← 0003, the v2 → v3 upgrade, schema rules
+    ├── auth-password.test.ts    ← hashing, format, policy, KDF limiter
+    ├── auth-login.test.ts       ← sign-in, sessions, expiry, logout, throttling
+    ├── authz.test.ts            ← 401/403, roles, self-protection, admin surface
+    ├── auth-provisioning.test.ts← bootstrap/recovery, CLI refusals
+    └── auth-secrets.test.ts     ← no secret in logs, database, audit or responses
 ```
 
 Nothing under `server/` is imported by the frontend, and the frontend build does not
@@ -71,7 +95,9 @@ untouched.
 - The database lives on the host's **local disk** (see §4).
 - The listener is bound to `127.0.0.1`. A configuration that names any other address is
   rejected before the socket is created, so the service cannot be reached from another
-  machine in this phase.
+  machine in this phase. Authentication exists (LAN-2) but is deliberately *not* a
+  substitute for that boundary: plain HTTP on loopback is acceptable; plain HTTP over a
+  network is not.
 
 ---
 
@@ -154,7 +180,7 @@ Therefore:
   solved problem: keep the production data directory on the system drive (the default
   `%ProgramData%\RHODES\data` is correct) and do not remap or `subst` it.
 - Symbolic-link and junction traversal **is** covered by tests on Linux; the
-  Windows-junction path is not yet exercised on Windows (§12).
+  Windows-junction path is not yet exercised on Windows (§13).
 - Backups are copies of the *whole* directory (`rhodes.db` plus `-wal`/`-shm`) taken
   while the service is stopped, or `VACUUM INTO` — never a file-level copy of a live
   database.
@@ -192,7 +218,7 @@ Transactions are kept short: one write per HTTP request, wrapped in
 
 ---
 
-## 6 · Schema (migrations 0001 and 0002)
+## 6 · Schema (migrations 0001, 0002 and 0003)
 
 | Table | Purpose |
 | --- | --- |
@@ -204,8 +230,10 @@ Transactions are kept short: one write per HTTP request, wrapped in
 | `note_revisions` | Append-only history of every accepted note save. `UPDATE` and `DELETE` are refused by trigger. |
 | `decisions` | Decisions, optionally tied to an agenda item, with approval status. |
 | `action_items` | Follow-ups with assignee, due date, priority and status. |
-| `audit_records` | Who did what, when. `actor` is a placeholder for the account id added later. |
+| `audit_records` | Who did what, when. Append-only since 0003; `actor` holds an account public id or `operator-cli`. |
 | `schema_migrations` | Applied migration version, name, SHA-256 checksum and timestamp. |
+| `user_accounts` | Login accounts (0003). Unique case-insensitive username, scrypt hash, role, status, must-change flag, optional Personnel link. Never deleted. |
+| `user_sessions` | Live sessions (0003). SHA-256 of the bearer token, creation and absolute expiry, revocation time and reason. No raw token, ever. |
 
 Modelling rules encoded in the SQL:
 
@@ -294,9 +322,28 @@ stored revision keeps its number and its text.
 > separately reviewed administrative procedure with its own audit trail — not an
 > ordinary delete statement, and not something this service offers today.
 
+### Rules added by migration 0003
+
+`0003-authentication.sql` adds two tables and three triggers; it changes nothing that
+0001 or 0002 created.
+
+| Object | Rule |
+| --- | --- |
+| `user_accounts.username_normalized` | `UNIQUE`, and a `CHECK` that it is lower-case — case-insensitive uniqueness is a database guarantee, not a convention |
+| `user_accounts.role` / `.status` | Closed sets (`administrator`/`member`, `active`/`disabled`) |
+| `user_accounts.personnel_id` | `UNIQUE`, optional, `ON DELETE RESTRICT` — one account per person, and the person cannot be deleted while an account points at them |
+| `trg_user_accounts_no_delete` | `BEFORE DELETE` refusal: accounts are disabled, never removed |
+| `user_sessions.token_hash` | `UNIQUE`, exactly 64 hex characters — the column cannot hold a raw token |
+| `user_sessions.expires_at` | `CHECK (expires_at > created_at)`: a session that expires when it starts is not a session |
+| `user_sessions.revoked_reason` | `NULL` or one of seven known reasons |
+| `trg_audit_records_no_update` / `_no_delete` | The audit trail is append-only |
+
+Nothing seeds a row. A fresh database has no account at all, and there is no code path
+that creates one except the local bootstrap command (§7.8).
+
 ### Migration procedure
 
-1. Add a new file to `src/db/migrations/`: `0003-<what-it-does>.sql` (four-digit
+1. Add a new file to `src/db/migrations/`: `0004-<what-it-does>.sql` (four-digit
    version, kebab-case name). Never edit an applied file — the checksum check refuses
    to start if you do, precisely so the schema and the source cannot drift apart.
    Line endings do not count as an edit: checksums are computed over **LF-normalised**
@@ -319,7 +366,192 @@ stored revision keeps its number and its text.
 
 ---
 
-## 7 · Initialisation
+## 7 · Authentication and authorisation (phase LAN-2)
+
+Backend only. There is no login screen in the React application yet, and nothing in
+`src/` knows these endpoints exist; the phase exists so that a later phase has a real
+boundary to put a screen in front of.
+
+### 7.1 · Identity: accounts are not people
+
+`personnel` describes who attends meetings, including people who will never sign in.
+`user_accounts` describes who may use the application. They are separate tables:
+
+- creating a Personnel record **never** creates a login — there is no code path that
+  does it, and no trigger that would;
+- an account may optionally link to exactly one Personnel record (`personnel_id`,
+  `UNIQUE`, `ON DELETE RESTRICT`), so history cannot lose the person it belongs to;
+- `public_id` (16 random bytes, hex) is the only identifier a client ever sees. The
+  integer primary key stays inside the process.
+
+Roles are `administrator` and `member`; status is `active` or `disabled`. There is no
+third role, no per-record permission table, and no permission cache.
+
+### 7.2 · Password storage
+
+| Property | Value | Why |
+| --- | --- | --- |
+| Algorithm | `scrypt` from `node:crypto`, asynchronous | No native dependency, no second crypto library, nothing to compile |
+| N / r / p | 131072 / 8 / 1 | OWASP-recommended; ~128 MiB and ~0.3 s per hash on the target hardware |
+| Salt | 16 random bytes per hash | Two users with the same password do not share a hash |
+| Key length | 64 bytes | Derived key length for the stored value |
+| `maxmem` | 256 MiB | Node refuses an allocation above this; the ceiling is twice the need |
+| Concurrency | 2 at once, 64 queued, then `503` | 2 hashes ≈ 256 MiB — what an office host can spare. An unbounded queue would be a memory-exhaustion vector |
+| Format | `scrypt$1$N=131072,r=8,p=1$<salt>$<key>` (base64url) | Self-describing and versioned, so parameters can change without invalidating existing rows |
+| Comparison | `timingSafeEqual` | Constant-time equality on the derived key |
+
+Measured in the development container (2 vCPU, Node 22.22.3): **301 / 301 / 348 / 834 ms**
+for four consecutive hashes — **348 ms median**, the first run cold — at roughly 128 MiB
+resident per hash. That cost is the defence: an attacker with a copy of the database
+faces it for every guess.
+
+The parameters recorded in a row are **validated before use** (N a power of two between
+2^12 and 2^20, r 1–32, p 1–16, salt 8–64 bytes, key 32–128 bytes). A corrupted or hostile
+row cannot make the server allocate a gigabyte, and an unreadable hash fails
+authentication instead of throwing.
+
+**Policy.** 15–128 characters, counted in Unicode code points. No composition rules, no
+trimming, no Unicode normalisation, no truncation: the exact string the user typed is the
+string that is hashed, so a pasted leading space matters and NFC/NFD forms are different
+passwords. The ceiling is checked *before* any key derivation.
+
+**Future, not implemented:** multi-factor authentication. It is named here so the absence
+is a decision rather than an oversight; the schema would take a TOTP secret column, and
+nothing in this design assumes passwords are the only factor.
+
+### 7.3 · Sessions
+
+- A token is 32 random bytes (`crypto.randomBytes`), base64url encoded — 256 bits,
+  43 characters. It leaves the process exactly once, in the login response.
+- The database stores **only** `sha256(token)` in `user_sessions.token_hash`, plus
+  creation time, absolute expiry and (after revocation) a reason. A copy of the database
+  cannot be used to impersonate anyone.
+- Expiry is **absolute**: eight hours from sign-in, never renewed by use. Using the
+  application does not extend a session; signing in again is the only way to get a new one.
+- Revoked by: logout, password change, password reset by an administrator, local
+  administrator recovery, role change, account disable. Each reason is a value in a
+  closed set (`revoked_reason`), so the trail is queryable.
+- Expired and revoked rows are deleted opportunistically (login, CLI). That is
+  operational state, not history: `audit_records` records why a session ended and is
+  append-only.
+
+The middleware re-reads the account row on **every** protected request. Roles are not in
+the token (there is no JWT and no role claim), so a role change or a disable takes effect
+on the next request rather than at the next login.
+
+### 7.4 · Endpoints
+
+| Method | Path | Auth | Behaviour |
+| --- | --- | --- | --- |
+| GET | `/api/health` | public | Liveness + database readiness |
+| POST | `/api/auth/login` | public | `{username, password}` → token, expiry, safe user summary, must-change flag |
+| POST | `/api/auth/logout` | bearer | Revokes the current session |
+| GET | `/api/auth/me` | bearer | Current account and session expiry |
+| POST | `/api/auth/change-password` | bearer | `{currentPassword, newPassword}`; clears the flag; revokes **all** sessions including the current one |
+| GET | `/api/admin/accounts` | admin | Account list, no hashes |
+| POST | `/api/admin/accounts` | admin | Creates an account, returns a server-generated temporary password **once** |
+| PATCH | `/api/admin/accounts/:public_id` | admin | `{role?, status?}` |
+| POST | `/api/admin/accounts/:public_id/reset-password` | admin | Temporary password, returned once |
+
+Rules that hold across the surface:
+
+- Everything under `/api/auth` and `/api/admin` is `cache-control: no-store`.
+- Credentials are accepted in the request body of `login`, and the token only in an
+  `Authorization: Bearer <43 chars>` header. A token in a query string or a body field is
+  ignored — it would end up in a log, a history or a referrer.
+- Failures are generic: an unknown username, a wrong password and a disabled account all
+  answer `401 auth.invalid_credentials` with the same message. An unknown username still
+  pays for one scrypt verification against a throwaway hash, so timing does not
+  distinguish it either.
+- `401` means "we do not know who you are"; `403` means "we do, and not for this".
+- An account with `must_change_password = 1` can sign in, read `/api/auth/me` and change
+  its password — and is refused everything else with `403 auth.password_change_required`.
+  The flag is read from the database per request, so clearing it takes effect immediately.
+- No endpoint accepts a role, a status or an id that the server did not just read from
+  the database.
+- Request bodies are limited to 16 kB and strictly parsed; malformed JSON is `400`,
+  oversize is `413`. No wildcard CORS header is ever emitted.
+
+### 7.5 · Administrative rules
+
+Enforced in `src/auth/accounts.ts` inside `BEGIN IMMEDIATE` transactions, not in route
+handlers, so any future caller inherits them:
+
+- usernames are unique **case-insensitively** (stored normalised, `UNIQUE` index);
+- accounts are **disabled, never deleted** — a `BEFORE DELETE` trigger refuses even a
+  statement that forgot;
+- disabling an account revokes its sessions; a role change revokes them too;
+- an administrator cannot disable or demote **themselves**, and cannot reset their own
+  password through the API;
+- the **last active administrator** can never be disabled or demoted. The count is taken
+  inside the write transaction, so two simultaneous demotions cannot both succeed;
+- every action above is audited, with the affected `public_id` and no credential material.
+
+### 7.6 · Throttling
+
+Two counters per attempt: the normalised username (10 failures per 15 minutes, then a
+15-minute cooldown) and the source address (three times that). A blocked key answers
+`429 auth.too_many_attempts` with `Retry-After`. Nothing is permanent: when the cooldown
+expires the account works again, with its real password.
+
+Both maps are **bounded** (5,000 keys each, oldest evicted) because usernames are
+attacker-chosen; an unbounded map would be a cheap memory-exhaustion attack.
+
+> **Known limitations, stated plainly.** The counters live in process memory. They reset
+> when the service restarts, and they are not shared with a second instance. With the
+> service bound to loopback, every request arrives from `127.0.0.1`, so the address
+> counter is a runaway-client brake rather than a per-machine control; the per-account
+> counter is the one doing the work. A future LAN phase needs shared state (or an
+> edge proxy) before the address dimension means anything.
+
+### 7.7 · Audit trail
+
+`audit_records` (migration 0001) is reused — there is no second audit table — and
+migration 0003 makes it **append-only** with `BEFORE UPDATE` and `BEFORE DELETE` triggers.
+
+Recorded: `account.bootstrap`, `account.create`, `account.disable`, `account.enable`,
+`account.role_change`, `account.password_change`, `account.password_reset`,
+`account.admin_recovery`, `auth.login`, `auth.login_failed`, `auth.logout` (session
+revocations are recorded on the account action that caused them, with a count).
+
+Never recorded: passwords, hashes, tokens, `Authorization` headers. The writer additionally
+redacts any detail key matching `pass|secret|token|hash|authoriz| cookie`, so a future call
+site cannot start leaking one by accident.
+
+### 7.8 · Provisioning and recovery
+
+There is **no default account and no default password**, and no HTTP route that can
+create the first one. Two local commands exist, both authorised by filesystem access to
+the data directory — the same access that would let someone read the database anyway:
+
+```bash
+npm run server:admin:bootstrap   # first administrator; refused if any account exists
+npm run server:admin:reset       # new password for an administrator (recovery)
+```
+
+- Passwords are typed at a **hidden prompt**; they are never accepted as an argument, an
+  environment variable or a file, and the command refuses extra arguments outright.
+- If the terminal cannot hide input (a pipe, a script, a non-TTY runner), the command
+  **stops** with exit code 1. It does not fall back to a visible prompt.
+- `bootstrap` runs migrations, then creates one `administrator` with the password the
+  operator chose, in a single transaction, and audits `account.bootstrap`.
+- `reset` sets a temporary password, sets `must_change_password = 1`, revokes every
+  session of the account, and audits `account.admin_recovery`. The operator reads the
+  temporary password to the user; it is never printed again.
+- A member's password is reset by an administrator in the application, not by this
+  command.
+
+### 7.9 · Threat model for this phase
+
+| Assumption | Consequence |
+| --- | --- |
+| The service binds to loopback only and speaks plain HTTP | Credentials never cross a network here. HTTP on loopback is not a credential-transport risk; **HTTPS is a precondition for any LAN exposure**, and is not implemented |
+| The host itself is trusted | Anyone who can read the data directory can bootstrap or reset an account. File permissions, not passwords, protect that boundary |
+| One process, one host | Throttle state and session state are in that process (sessions in SQLite, counters in memory) |
+| No client is attached yet | The token has no storage decision to make yet. When a client is added it must hold the token **in memory only** — never `localStorage`, which any script in the page can read |
+| Code does not log request bodies | The request log has method, path, status and duration; never a header or a body |
+
+## 8 · Initialisation
 
 ```bash
 npm --prefix server install     # once, on the host
@@ -336,10 +568,10 @@ never be committed or copied into the repository.
 
 ---
 
-## 8 · Health endpoint
+## 9 · Health endpoint
 
-`GET /api/health` — the only endpoint in this phase. It answers "is the service up and
-is the database usable?" and nothing else.
+`GET /api/health` — the only endpoint that never needs a session. It answers "is the
+service up and is the database usable?" and nothing else.
 
 ```json
 {
@@ -347,7 +579,7 @@ is the database usable?" and nothing else.
   "service": "rhodes-api",
   "version": "0.1.0",
   "apiVersion": 1,
-  "database": { "status": "ok", "schemaVersion": 1 },
+  "database": { "status": "ok", "schemaVersion": 3 },
   "uptimeSeconds": 42
 }
 ```
@@ -358,11 +590,13 @@ is the database usable?" and nothing else.
 - Contains **no** paths, file names, configuration, credentials, row counts, or record
   data. `x-request-id` identifies the request in the log without exposing anything.
 - Every other path returns `404` in the same error envelope:
-  `{"error":{"code":"http.not_found","message":"No such endpoint.","requestId":"…"}}`.
+  `{"error":{"code":"http.not_found","message":"No such endpoint.","requestId":"…"}}` —
+  including any path that does not exist *yet*, which is why a business endpoint added
+  later starts returning `401` rather than silently serving data.
 
 ---
 
-## 9 · Start and stop
+## 10 · Start and stop
 
 ```bash
 npm run server:dev        # development, watch mode (tsx)
@@ -388,7 +622,7 @@ directory and the data directory must both be local.
 
 ---
 
-## 10 · Why clients go through the API instead of the file
+## 11 · Why clients go through the API instead of the file
 
 - **One lock owner.** Several clients opening a SQLite file over a network is the
   classic corruption path; the API serialises writes and owns the WAL.
@@ -402,22 +636,36 @@ directory and the data directory must both be local.
 
 ---
 
-## 11 · Deferred by design
+## 12 · Deferred by design
 
-Not implemented, and not started here: authentication and user management; roles and
-admin/member permissions; LAN exposure; HTTPS certificates; Electron packaging;
-installers or Windows service registration; frontend API integration; import of
-existing browser records; Google Calendar/Meet integration; shared live synchronisation;
-offline editing; any visual redesign.
+Implemented in LAN-2 and documented above: accounts, roles, sessions, password
+policy and hashing, login throttling, the administrative account surface, and local
+provisioning/recovery.
+
+Deliberately **not** implemented, and not started here: multi-factor authentication;
+LAN exposure (the listener stays on loopback); HTTPS certificates and certificate
+pinning; a login or account-administration screen in the React application; storing or
+refreshing tokens in a client; Electron packaging; installers or Windows service
+registration; frontend API integration; import of existing browser records; Google
+Calendar/Meet integration; shared live synchronisation; offline editing; any visual
+redesign.
+
+Two known gaps that a later phase must close before this is used by more than one person
+on one machine:
+
+- **No TLS.** Credentials and tokens must not cross a network in clear text. Any change
+  that binds the service to a LAN address requires HTTPS in the same change.
+- **In-memory throttle state.** It is per process and per restart, and the address
+  dimension is meaningless while every request arrives on loopback.
 
 The schema is shaped for the next phase: `audit_records.actor`,
 `meeting_notes.updated_by`, `note_revisions.author` and `meeting_attendees` are already
 the right shape for account identity, and the `row_version` columns already support
-conflict detection. None of it assumes a particular auth mechanism.
+conflict detection.
 
 ---
 
-## 12 · Windows verification still required
+## 13 · Windows verification still required
 
 This foundation was developed and tested on Linux. Before it is relied on in the
 office, verify on the actual Windows host:
@@ -455,3 +703,18 @@ office, verify on the actual Windows host:
 12. **REPLACE protection on Windows.** `PRAGMA recursive_triggers` is a connection-level
     SQLite setting, identical on every platform, but the `INSERT OR REPLACE` refusal has
     only been demonstrated on Linux.
+13. **Hidden password entry (LAN-2, not yet run on Windows).** `npm run
+    server:admin:bootstrap` must hide typing in `cmd.exe` and in Windows Terminal, and
+    must refuse when stdin is redirected. The automated tests prove the *refusal* path on
+    Linux; interactive entry in a Windows console has not been exercised. If a terminal
+    echoes the password, stop and report it — do not add a fallback that accepts a
+    password as an argument.
+14. **Authentication over the loopback interface on Windows.** Sign in, call
+    `/api/auth/me`, change the password, and confirm the old token is refused
+    afterwards; then confirm `Get-NetTCPConnection -LocalPort 4317` still shows
+    `127.0.0.1` only — an authenticated endpoint reachable from a second machine would
+    defeat the whole phase.
+15. **scrypt cost on the real host.** The parameters were measured on a 2-vCPU Linux
+    container at ~350 ms per hash. On a slower office machine the same parameters cost
+    more; confirm sign-in latency is acceptable and that two simultaneous sign-ins do not
+    exhaust memory (the limiter caps them at two).

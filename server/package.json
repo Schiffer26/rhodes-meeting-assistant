@@ -13,7 +13,9 @@
     "build": "tsc -p tsconfig.json && node scripts/copy-migrations.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
     "test": "node scripts/run-tests.mjs",
-    "migrate": "tsx src/cli/migrate.ts"
+    "migrate": "tsx src/cli/migrate.ts",
+    "admin:bootstrap": "tsx src/cli/admin.ts bootstrap",
+    "admin:reset": "tsx src/cli/admin.ts reset"
   },
   "dependencies": {
     "better-sqlite3": "13.1.1",

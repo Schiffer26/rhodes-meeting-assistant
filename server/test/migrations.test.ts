@@ -22,7 +22,16 @@ import {
   normaliseNewlines,
   runMigrations,
 } from '../src/db/migrate.js';
-import { configFor, insertMeeting, openMigrated, removeDir, tableCounts, tempDataDir } from './helpers.js';
+import {
+  configFor,
+  insertMeeting,
+  LATEST_SCHEMA_VERSION,
+  MIGRATION_FILES,
+  openMigrated,
+  removeDir,
+  tableCounts,
+  tempDataDir,
+} from './helpers.js';
 
 const EXPECTED_TABLES = [
   'action_items',
@@ -35,6 +44,8 @@ const EXPECTED_TABLES = [
   'note_revisions',
   'personnel',
   'schema_migrations',
+  'user_accounts',
+  'user_sessions',
 ];
 
 function tableNames(db: ReturnType<typeof openMigrated>['db']): string[] {
@@ -72,24 +83,29 @@ test('case 4: migrations create every table in the schema', () => {
       for (const table of EXPECTED_TABLES) {
         assert.ok(names.includes(table), `missing table: ${table}`);
       }
-      assert.equal(db.schemaVersion(), 2, 'a fresh database reaches schema version 2');
+      assert.equal(db.schemaVersion(), LATEST_SCHEMA_VERSION, 'a fresh database reaches the latest schema version');
       const applied = db.handle.prepare('select version, name, checksum, applied_at from schema_migrations order by version').all() as {
         version: number;
         name: string;
         checksum: string;
         applied_at: string;
       }[];
-      assert.equal(applied.length, 2);
+      assert.equal(applied.length, MIGRATION_FILES.length);
       assert.equal(applied[0]?.version, 1);
       assert.equal(applied[0]?.name, 'initial-schema');
       assert.equal(applied[1]?.version, 2);
       assert.equal(applied[1]?.name, 'integrity-hardening');
+      assert.deepEqual(
+        applied.map((row) => row.name),
+        MIGRATION_FILES.map((file) => file.name),
+        'every shipped migration is recorded, in order',
+      );
       for (const row of applied) {
         assert.match(row.checksum, /^[0-9a-f]{64}$/);
         assert.match(row.applied_at, /^\d{4}-\d{2}-\d{2}T/);
       }
       // PRAGMA user_version mirrors the highest applied migration.
-      assert.equal(db.handle.pragma('user_version', { simple: true }), 2);
+      assert.equal(db.handle.pragma('user_version', { simple: true }), LATEST_SCHEMA_VERSION);
     } finally {
       db.close();
     }
@@ -106,14 +122,14 @@ test('case 5: re-running migrations is idempotent', () => {
       const second = runMigrations(db.handle, { migrationsDir: MIGRATIONS_DIR });
       assert.deepEqual(second.applied, []);
       assert.equal(second.skipped, second.totalFiles);
-      assert.equal(second.currentVersion, 2);
-      assert.equal(second.totalFiles, 2);
+      assert.equal(second.currentVersion, LATEST_SCHEMA_VERSION);
+      assert.equal(second.totalFiles, MIGRATION_FILES.length);
 
       const third = runMigrations(db.handle, { migrationsDir: MIGRATIONS_DIR });
       assert.deepEqual(third.applied, []);
 
       const count = db.handle.prepare('select count(*) as n from schema_migrations').get() as { n: number };
-      assert.equal(count.n, 2, 'a migration must never be recorded twice');
+      assert.equal(count.n, MIGRATION_FILES.length, 'a migration must never be recorded twice');
 
       // Re-running must not duplicate the triggers created by migration 0002.
       const triggers = db.handle
@@ -140,7 +156,7 @@ test('case 9: a freshly initialised database contains no records', () => {
     try {
       const counts = tableCounts(db);
       for (const [table, count] of Object.entries(counts)) {
-        const expected = table === 'schema_migrations' ? 2 : 0;
+        const expected = table === 'schema_migrations' ? MIGRATION_FILES.length : 0;
         assert.equal(count, expected, `${table} should contain ${expected} row(s), found ${count}`);
       }
       const names = db.handle.prepare('select full_name from personnel').all();
@@ -209,7 +225,7 @@ test('a failing migration rolls back and leaves the previous version intact', ()
   try {
     cpSync(MIGRATIONS_DIR, migrationsCopy, { recursive: true });
     writeFileSync(
-      path.join(migrationsCopy, '0003-deliberately-broken.sql'),
+      path.join(migrationsCopy, '0004-deliberately-broken.sql'),
       'create table half_applied (id integer primary key);\nthis is not valid sql;\n',
     );
 
@@ -223,7 +239,7 @@ test('a failing migration rolls back and leaves the previous version intact', ()
           return true;
         },
       );
-      assert.equal(db.schemaVersion(), 2, 'the failed migration must not be recorded');
+      assert.equal(db.schemaVersion(), LATEST_SCHEMA_VERSION, 'the failed migration must not be recorded');
       const names = tableNames(db);
       assert.ok(!names.includes('half_applied'), 'the failed migration must be rolled back');
     } finally {
@@ -237,7 +253,7 @@ test('a failing migration rolls back and leaves the previous version intact', ()
 
 test('migration files are parsed by version and duplicates are refused', () => {
   const files = loadMigrationFiles(MIGRATIONS_DIR);
-  assert.equal(files.length, 2);
+  assert.equal(files.length, MIGRATION_FILES.length);
   assert.equal(files[0]?.version, 1);
   assert.equal(files[0]?.name, 'initial-schema');
   assert.equal(files[1]?.version, 2);
@@ -257,7 +273,7 @@ test('migration files are parsed by version and duplicates are refused', () => {
   }
 });
 
-test('an existing version-1 database upgrades in place to version 2', () => {
+test('an existing version-1 database upgrades in place to the latest version', () => {
   const dir = tempDataDir();
   const v1Dir = mkdtempSync(path.join(tmpdir(), 'rhodes-v1-'));
   try {
@@ -277,16 +293,22 @@ test('an existing version-1 database upgrades in place to version 2', () => {
       const meetingId = insertMeeting(db, { title: 'Legacy meeting', meeting_date: '2026-03-11' });
 
       const upgrade = runMigrations(db.handle, { migrationsDir: MIGRATIONS_DIR });
-      assert.deepEqual(upgrade.applied, [{ version: 2, name: 'integrity-hardening' }]);
-      assert.equal(upgrade.currentVersion, 2);
-      assert.equal(db.schemaVersion(), 2);
+      // The version-1 fixture directory knows only about 0001, so every migration the
+      // repository now ships is pending. Listing them explicitly proves the upgrade path
+      // rather than just counting files.
+      assert.deepEqual(
+        upgrade.applied,
+        MIGRATION_FILES.filter((file) => file.version > 1).map((file) => ({ version: file.version, name: file.name })),
+      );
+      assert.equal(upgrade.currentVersion, LATEST_SCHEMA_VERSION);
+      assert.equal(db.schemaVersion(), LATEST_SCHEMA_VERSION);
 
       // 0001 was verified against its stored checksum during the upgrade: the recorded
       // hash still matches the file on disk.
       const stored = db.handle
         .prepare('select version, checksum from schema_migrations order by version')
         .all() as { version: number; checksum: string }[];
-      assert.equal(stored.length, 2);
+      assert.equal(stored.length, MIGRATION_FILES.length);
       assert.equal(
         stored[0]?.checksum,
         checksumOf(readFileSync(path.join(MIGRATIONS_DIR, '0001-initial-schema.sql'), 'utf8')),
@@ -304,11 +326,11 @@ test('an existing version-1 database upgrades in place to version 2', () => {
       // And the upgrade is not repeated on the next run.
       const again = runMigrations(db.handle, { migrationsDir: MIGRATIONS_DIR });
       assert.deepEqual(again.applied, []);
-      assert.equal(again.currentVersion, 2);
+      assert.equal(again.currentVersion, LATEST_SCHEMA_VERSION);
       const triggers = db.handle
         .prepare("select count(*) as n from sqlite_master where type = 'trigger'")
         .get() as { n: number };
-      assert.equal(triggers.n, 20, 'migration 0002 must not duplicate its triggers');
+      assert.equal(triggers.n, 23, 'migrations 0002 and 0003 must not duplicate their triggers');
     } finally {
       db.close();
     }
@@ -409,14 +431,17 @@ test('a version-1 database recorded from a CRLF checkout still verifies and upgr
 
       // Opening with the current runner must recognise 0001 rather than refuse it.
       const upgrade = runMigrations(db.handle, { migrationsDir: MIGRATIONS_DIR });
-      assert.deepEqual(upgrade.applied, [{ version: 2, name: 'integrity-hardening' }]);
-      assert.equal(db.schemaVersion(), 2);
+      assert.deepEqual(
+        upgrade.applied,
+        MIGRATION_FILES.filter((file) => file.version > 1).map((file) => ({ version: file.version, name: file.name })),
+      );
+      assert.equal(db.schemaVersion(), LATEST_SCHEMA_VERSION);
 
       // The recorded checksum is left exactly as found — verified, not rewritten.
       const stored = db.handle
         .prepare('select version, checksum from schema_migrations order by version')
         .all() as { version: number; checksum: string }[];
-      assert.equal(stored.length, 2);
+      assert.equal(stored.length, MIGRATION_FILES.length);
       assert.equal(stored[0]?.checksum, legacyChecksum, 'the legacy checksum must not be overwritten');
       assert.equal(stored[1]?.checksum, checksumOf(readFileSync(path.join(MIGRATIONS_DIR, '0002-integrity-hardening.sql'), 'utf8')));
 

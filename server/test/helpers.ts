@@ -10,11 +10,19 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { createApp } from '../src/app.js';
+import { createApp, type AppDependencies } from '../src/app.js';
 import { loadConfig, type ServerConfig } from '../src/config.js';
 import { openDatabase, type RhodesDatabase } from '../src/db/index.js';
-import { MIGRATIONS_DIR, runMigrations } from '../src/db/migrate.js';
+import { loadMigrationFiles, MIGRATIONS_DIR, runMigrations } from '../src/db/migrate.js';
 import { startServer, type StartedServer } from '../src/server.js';
+
+/**
+ * The migrations this checkout ships. Version assertions derive from these files instead
+ * of a literal, so adding a migration does not quietly leave a stale expectation behind
+ * (and a *missing* migration still fails the "reaches the latest version" tests).
+ */
+export const MIGRATION_FILES = loadMigrationFiles(MIGRATIONS_DIR);
+export const LATEST_SCHEMA_VERSION = MIGRATION_FILES.reduce((max, file) => Math.max(max, file.version), 0);
 
 export function tempDataDir(): string {
   return mkdtempSync(path.join(tmpdir(), 'rhodes-test-'));
@@ -60,11 +68,17 @@ export function migratedConfig(dataDir: string, overrides: Record<string, string
   return config;
 }
 
-/** Start the real HTTP stack on an ephemeral loopback port. */
+/**
+ * Start the real HTTP stack on an ephemeral loopback port.
+ *
+ * Extra dependencies (a fixed clock, a pre-seeded rate limiter) can be injected so time
+ * and throttling can be exercised without sleeping for hours.
+ */
 export async function startTestServer(
   db: RhodesDatabase,
+  deps: Partial<Omit<AppDependencies, 'db'>> = {},
 ): Promise<{ running: StartedServer; baseUrl: string }> {
-  const app = createApp({ db, uptimeSeconds: () => 42 });
+  const app = createApp({ db, uptimeSeconds: () => 42, ...deps });
   const running = await startServer(app, { host: '127.0.0.1', port: 0 });
   return { running, baseUrl: running.url };
 }
@@ -81,6 +95,8 @@ export function tableCounts(db: RhodesDatabase): Record<string, number> {
     'decisions',
     'action_items',
     'audit_records',
+    'user_accounts',
+    'user_sessions',
     'schema_migrations',
   ];
   const out: Record<string, number> = {};

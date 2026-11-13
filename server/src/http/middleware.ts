@@ -58,7 +58,30 @@ export function notFoundHandler(req: Request, res: Response): void {
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function errorHandler(error: unknown, req: Request, res: Response, _next: NextFunction): void {
   const requestId = (req as RequestWithContext).requestId ?? null;
+  // An error response is never cacheable, on any route, including the 401/403 answers
+  // produced by the authentication middleware.
+  if (!res.headersSent) res.setHeader('cache-control', 'no-store');
   const described = describeError(error);
+
+  // Body-parser failures arrive as plain errors with a `type`. They are client mistakes,
+  // not server faults, and must not surface as 500.
+  const bodyError = error as { type?: string } | null;
+  if (bodyError?.type === 'entity.parse.failed') {
+    logger.warn('http.invalid_json', { requestId });
+    if (res.headersSent) return;
+    res.status(400).json({
+      error: { code: 'http.invalid_json', message: 'The request body is not valid JSON.', requestId },
+    });
+    return;
+  }
+  if (bodyError?.type === 'entity.too.large') {
+    logger.warn('http.payload_too_large', { requestId });
+    if (res.headersSent) return;
+    res.status(413).json({
+      error: { code: 'http.payload_too_large', message: 'The request body is too large.', requestId },
+    });
+    return;
+  }
 
   if (error instanceof AppError) {
     logger.error('http.error', {

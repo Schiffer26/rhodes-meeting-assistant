@@ -14,6 +14,9 @@
 import express, { type Express } from 'express';
 
 import type { RhodesDatabase } from './db/index.js';
+import { LoginRateLimiter } from './auth/rateLimit.js';
+import { createAdminRouter } from './http/adminRoutes.js';
+import { createAuthRouter } from './http/authRoutes.js';
 import { createHealthHandler } from './http/health.js';
 import { errorHandler, notFoundHandler, requestContext } from './http/middleware.js';
 
@@ -21,6 +24,10 @@ export interface AppDependencies {
   readonly db: RhodesDatabase;
   /** Injectable for deterministic tests. */
   readonly uptimeSeconds?: () => number;
+  /** Injectable clock: session expiry and audit timestamps. */
+  readonly now?: () => Date;
+  /** Injectable throttling state, so tests can run with a deterministic clock. */
+  readonly rateLimiter?: LoginRateLimiter;
 }
 
 export function createApp(deps: AppDependencies): Express {
@@ -35,9 +42,22 @@ export function createApp(deps: AppDependencies): Express {
 
   app.use(requestContext);
 
+  // Small, strict JSON bodies. Authentication payloads are a few hundred bytes; 16 kB is
+  // generous for a username and a passphrase and small enough that a malformed or hostile
+  // body cannot cost much. A larger body is refused with 413, malformed JSON with 400.
+  app.use(express.json({ limit: '16kb', strict: true, type: 'application/json' }));
+
+  // Public: liveness and database readiness only.
   app.get('/api/health', createHealthHandler({ db: deps.db, uptimeSeconds: deps.uptimeSeconds }));
 
-  // No data endpoints exist in this phase. Everything else is a 404.
+  const now = deps.now ?? (() => new Date());
+  const limiter = deps.rateLimiter ?? new LoginRateLimiter();
+
+  app.use('/api/auth', createAuthRouter({ db: deps.db, now, limiter }));
+  app.use('/api/admin', createAdminRouter({ db: deps.db, now }));
+
+  // Business endpoints (meetings, personnel, notes) do not exist yet. Everything else is
+  // a 404, including any unauthenticated data path.
   app.use(notFoundHandler);
   app.use(errorHandler);
 
