@@ -73,7 +73,8 @@ server/
     ├── auth-secrets.test.ts     ← no secret in logs, database, audit or responses
     ├── auth-stale-authz.test.ts ← LAN-2.1: revalidation after an asynchronous hash
     ├── auth-audit.test.ts       ← LAN-2.1: required audit writes roll the change back
-    └── auth-overload.test.ts    ← LAN-2.1: KDF saturation and dummy-hash recovery
+    ├── auth-overload.test.ts    ← LAN-2.1: KDF saturation and dummy-hash recovery
+    └── auth-login-revalidation.test.ts ← LAN-2.1a: sign-in revalidated after the await
 ```
 
 Nothing under `server/` is imported by the frontend, and the frontend build does not
@@ -490,6 +491,13 @@ Rules that hold across the surface:
   swallowing it, and a failed dummy-hash initialisation is forgotten rather than cached, so
   a transient overload cannot permanently disable it — and cannot become an enumeration
   signal.
+- A sign-in is only completed against an account that has not changed since its password
+  was verified (LAN-2.1a). The row is re-read and the session inserted in one
+  `BEGIN IMMEDIATE` transaction: if the account was disabled, re-enabled, reset or
+  otherwise modified while scrypt was running, no session is created, the attempt counts
+  against the throttle, and the answer is the same generic `401` — never a hint that the
+  account changed. The token, the role and the must-change flag in a successful response
+  all come from that revalidated row.
 - `401` means "we do not know who you are"; `403` means "we do, and not for this".
 - An account with `must_change_password = 1` can sign in, read `/api/auth/me` and change
   its password — and is refused everything else with `403 auth.password_change_required`.
@@ -623,6 +631,30 @@ Two test seams exist for these, both documented as such in `password.ts`:
 `withHashCapacityForTests` (shrink the limiter instead of launching dozens of real
 derivations) and `resetDummyHashForTests` (observe lazy initialisation from a known state).
 Neither is reachable from an HTTP route.
+
+### 7.11 · Sign-in revalidation in LAN-2.1a
+
+One more window of the same kind, found by independent review of LAN-2.1. The sign-in route
+read the account row, awaited `verifyPassword`, and then created a session from the row it
+had read. An administrator who disabled the account or reset its password during that
+await revoked every session — and the pending sign-in then inserted a brand-new one
+afterwards, exactly the session the revocation was meant to prevent.
+
+| What changed | Where |
+| --- | --- |
+| `completeLogin` re-reads the row, compares it with the row that was verified, and inserts the session — all in one `BEGIN IMMEDIATE` transaction | `src/auth/accounts.ts` |
+| Refusal is `missing`, `password_changed`, `account_changed` (any `row_version` bump) or `inactive`; all four map to the generic `401`, feed the throttle, and write a best-effort `auth.login_failed` row whose `reason` is a neutral `account_changed_during_login` | `src/http/authRoutes.ts` |
+| The token, role, username, public id and must-change flag in a successful response are taken from the revalidated row, not the pre-verification snapshot | `src/http/authRoutes.ts` |
+| Verification itself is injectable (`passwordVerifier`), so a test can perform the concurrent administrative operation at the exact moment the route awaits the result | `src/app.ts`, `src/http/authRoutes.ts` |
+
+`row_version` is bumped by every security state change in the repository — disable,
+re-enable, role change, must-change flag, password reset, password change — so an attempt
+that outlived a disable-then-re-enable round trip is refused even though the password never
+moved. `auth-login-revalidation.test.ts` proves all of it with no sleeps: reset during
+verification, disable during verification, disable-and-re-enable, a session issued before
+the operation staying revoked, a later sign-in with the current password working, the
+response reflecting the revalidated row, the refusal being byte-identical in shape to a
+wrong password, and the ordinary path still producing exactly one session and one audit row.
 
 ## 8 · Initialisation
 
@@ -792,7 +824,9 @@ office, verify on the actual Windows host:
     more; confirm sign-in latency is acceptable and that two simultaneous sign-ins do not
     exhaust memory (the limiter caps them at two, and every derivation is bounded by the
     fixed 256 MiB budget).
-16. **Transactional revalidation on Windows SQLite (LAN-2.1).** `BEGIN IMMEDIATE` and the
-    rollback of a failed audit insert were exercised on Linux only. Confirm on the host
-    that an account creation with a deliberately broken `audit_records` trigger leaves no
-    account behind, and that a demotion during an in-flight creation is refused.
+16. **Transactional revalidation on Windows SQLite (LAN-2.1, extended in LAN-2.1a).**
+    `BEGIN IMMEDIATE` and the rollback of a failed audit insert were exercised on Linux
+    only. Confirm on the host that an account creation with a deliberately broken
+    `audit_records` trigger leaves no account behind, that a demotion during an in-flight
+    creation is refused, and that an administrator resetting a password while that user is
+    signing in produces no session for the pending attempt.

@@ -33,6 +33,11 @@ export interface AppDependencies {
    * security operation at the exact moment a route is awaiting a hash.
    */
   readonly passwordHasher?: (password: string) => Promise<string>;
+  /**
+   * Injectable password verification for sign-in. Tests use it to perform a concurrent
+   * security operation at the exact moment the login route is awaiting the result.
+   */
+  readonly passwordVerifier?: (password: string, encodedHash: string) => Promise<boolean>;
 }
 
 export function createApp(deps: AppDependencies): Express {
@@ -58,7 +63,16 @@ export function createApp(deps: AppDependencies): Express {
   const now = deps.now ?? (() => new Date());
   const limiter = deps.rateLimiter ?? new LoginRateLimiter();
 
-  app.use('/api/auth', createAuthRouter({ db: deps.db, now, limiter, passwordHasher: deps.passwordHasher }));
+  app.use(
+    '/api/auth',
+    createAuthRouter({
+      db: deps.db,
+      now,
+      limiter,
+      passwordHasher: deps.passwordHasher,
+      passwordVerifier: deps.passwordVerifier,
+    }),
+  );
   app.use('/api/admin', createAdminRouter({ db: deps.db, now, passwordHasher: deps.passwordHasher }));
 
   // Business endpoints (meetings, personnel, notes) do not exist yet. Everything else is

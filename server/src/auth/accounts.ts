@@ -27,6 +27,17 @@
  * The transactional checks use `BEGIN IMMEDIATE`, so two administrators acting at the
  * same moment cannot both observe "there is another administrator" and then both step
  * down.
+ *
+ * ── sign-in revalidation (LAN-2.1a correction) ───────────────────────────────
+ *
+ * Sign-in awaits the same slow derivation, on the *verified* password. The account row
+ * used to be the one read before that await, and the session was inserted without asking
+ * the database again: an administrator who disabled the account or reset its password
+ * during the derivation could revoke every session and still see a brand-new one appear
+ * afterwards. `completeLogin` closes that window — the row is re-read, compared with what
+ * was verified, and only then is the session inserted, all inside one `BEGIN IMMEDIATE`
+ * transaction. Its result carries the fresh row, so the sign-in response cannot report a
+ * stale role or a stale must-change flag either.
  */
 
 import { randomBytes } from 'node:crypto';
@@ -48,7 +59,7 @@ import {
   usernameTaken,
 } from './errors.js';
 import { normalizeUsername } from './policy.js';
-import { isSessionLive, revokeAllSessions } from './sessions.js';
+import { createSession, isSessionLive, revokeAllSessions, type IssuedSession } from './sessions.js';
 
 export type Role = 'administrator' | 'member';
 export type AccountStatus = 'active' | 'disabled';
@@ -564,6 +575,65 @@ export function recoverAdministratorPassword(db: Db, input: RecoveryInput): Acco
     const updated = findById(db, account.id);
     if (!updated) throw accountNotFound();
     return updated;
+  });
+
+  return run.immediate();
+}
+
+/**
+ * Why a pending sign-in was refused. Internal only: the route maps every one of these to
+ * the same generic `401`, and the audit row deliberately does not name which check failed.
+ */
+export type LoginRefusal = 'missing' | 'inactive' | 'password_changed' | 'account_changed';
+
+export type LoginCompletion =
+  | { readonly ok: true; readonly account: AccountRow; readonly session: IssuedSession }
+  | { readonly ok: false; readonly reason: LoginRefusal };
+
+export interface CompleteLoginInput {
+  readonly accountId: number;
+  /**
+   * The `password_hash` that was handed to `verifyPassword`. Compared again here, because
+   * an administrator reset or another device's password change during that await means the
+   * verified secret is no longer the account's secret.
+   */
+  readonly expectedPasswordHash: string;
+  /** `row_version` from the same pre-verification read. */
+  readonly expectedRowVersion: number;
+  readonly now?: Date;
+}
+
+/**
+ * Turn a verified password into a session, but only if the account still says the same
+ * thing it said before the verification.
+ *
+ * The re-read, the comparison and the session insert happen in one `BEGIN IMMEDIATE`
+ * transaction, so no other write can land between "the account still qualifies" and "the
+ * session exists". A refusal returns without inserting anything, which is the only outcome
+ * the caller can distinguish — the *reason* never leaves this module in a response.
+ *
+ * Every security state change in this repository bumps `row_version`: disable, re-enable,
+ * role change, must-change flag, password reset and password change. Requiring it to be
+ * unchanged therefore refuses a pending sign-in that outlived a disable-then-re-enable
+ * round trip as well, even though the password itself never moved.
+ */
+export function completeLogin(db: Db, input: CompleteLoginInput): LoginCompletion {
+  const run = db.transaction((): LoginCompletion => {
+    const current = findById(db, input.accountId);
+    if (!current) return { ok: false, reason: 'missing' };
+
+    if (current.password_hash !== input.expectedPasswordHash) {
+      return { ok: false, reason: 'password_changed' };
+    }
+
+    if (current.row_version !== input.expectedRowVersion) {
+      return { ok: false, reason: 'account_changed' };
+    }
+
+    if (current.status !== 'active') return { ok: false, reason: 'inactive' };
+
+    const session = createSession(db, current.id, input.now ?? new Date());
+    return { ok: true, account: current, session };
   });
 
   return run.immediate();

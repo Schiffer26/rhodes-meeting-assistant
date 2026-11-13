@@ -17,6 +17,16 @@
  * The attempt is counted against the login throttle and answered with the same generic
  * failure as any other wrong credential, whether or not the username exists, so nothing
  * about the account is revealed by the shape of the response.
+ *
+ * ── a session is only issued against the account as it is *now* (LAN-2.1a) ────
+ *
+ * `verifyPassword` is asynchronous, and an administrator can disable the account or reset
+ * its password while it runs. Such an operation revokes every session the account holds —
+ * so the sign-in that was already in flight must not then create a fresh one. The token is
+ * therefore issued inside `completeLogin`: one transaction that re-reads the row, compares
+ * it with the hash and version that were verified, and inserts the session only if they
+ * still agree. A refusal is the same generic `401`, counts against the throttle, and is
+ * recorded best-effort; the response never says which check failed.
  */
 
 import { Router } from 'express';
@@ -25,6 +35,7 @@ import type { RhodesDatabase } from '../db/index.js';
 import { currentAuth, requireAuth } from '../auth/middleware.js';
 import {
   changeOwnPassword,
+  completeLogin,
   findByUsername,
   toAccountSummary,
   type ActorHandle,
@@ -39,7 +50,7 @@ import {
 import { hashPassword, verifyAgainstDummyHash, verifyPassword } from '../auth/password.js';
 import { normalizeUsername, passwordExceedsLimit, validatePassword } from '../auth/policy.js';
 import { LoginRateLimiter } from '../auth/rateLimit.js';
-import { createSession, purgeExpiredSessions, revokeSession } from '../auth/sessions.js';
+import { purgeExpiredSessions, revokeSession } from '../auth/sessions.js';
 import { noStore } from './respond.js';
 
 export interface AuthRouteDeps {
@@ -52,6 +63,12 @@ export interface AuthRouteDeps {
    * guessing with sleeps.
    */
   readonly passwordHasher?: (password: string) => Promise<string>;
+  /**
+   * Verification of a submitted password. Injectable for the same reason: a test can
+   * perform a concurrent security operation at exactly the moment the sign-in route is
+   * awaiting the result, instead of guessing with sleeps.
+   */
+  readonly passwordVerifier?: (password: string, encodedHash: string) => Promise<boolean>;
 }
 
 interface CredentialsBody {
@@ -64,6 +81,7 @@ export function createAuthRouter(deps: AuthRouteDeps): Router {
   router.use(noStore);
 
   const hasher = deps.passwordHasher ?? hashPassword;
+  const verifier = deps.passwordVerifier ?? verifyPassword;
   const authenticate = requireAuth({ db: deps.db.handle, now: deps.now });
 
   router.post('/login', async (req, res) => {
@@ -114,12 +132,9 @@ export function createAuthRouter(deps: AuthRouteDeps): Router {
       throw invalidCredentials();
     }
 
-    const passwordMatches = await verifyPassword(body.password, account.password_hash);
+    const passwordMatches = await verifier(body.password, account.password_hash);
 
-    // A disabled account is checked *after* the password, and answers exactly like a
-    // wrong password: no "your account is disabled" message that would confirm the
-    // username exists.
-    if (!passwordMatches || account.status !== 'active') {
+    if (!passwordMatches) {
       deps.limiter.recordFailure(normalized, address);
       recordAudit(db, {
         action: 'auth.login_failed',
@@ -130,15 +145,47 @@ export function createAuthRouter(deps: AuthRouteDeps): Router {
       throw invalidCredentials();
     }
 
+    // The await above is a window, and this one matters: an administrator can disable the
+    // account or reset its password while the derivation runs, revoking every session the
+    // account had — and a session created from the *stale* row would then be the one live
+    // session nobody revoked. The repository re-reads the row and inserts the session in a
+    // single transaction, so either both happen against the current state or neither
+    // happens at all.
+    const completion = completeLogin(db, {
+      accountId: account.id,
+      expectedPasswordHash: account.password_hash,
+      expectedRowVersion: account.row_version,
+      now: deps.now(),
+    });
+
+    if (!completion.ok) {
+      // Disabled, reset, re-enabled or otherwise changed since the row was read: the same
+      // generic answer, the same throttle accounting, and no hint about which it was.
+      deps.limiter.recordFailure(normalized, address);
+      recordAudit(db, {
+        action: 'auth.login_failed',
+        entity: 'user_account',
+        entityKey: account.public_id,
+        outcome: 'denied',
+        detail: { reason: 'account_changed_during_login' },
+      });
+      throw invalidCredentials();
+    }
+
+    // Everything below comes from the revalidated row, never from the pre-verification
+    // snapshot: the token, the role and the must-change flag all describe the account as
+    // it was at the moment the session was created.
+    const fresh = completion.account;
+    const session = completion.session;
+
     deps.limiter.recordSuccess(normalized);
     purgeExpiredSessions(db, deps.now().toISOString());
 
-    const session = createSession(db, account.id, deps.now());
     recordAudit(db, {
       action: 'auth.login',
       entity: 'user_account',
-      entityKey: account.public_id,
-      actor: account.public_id,
+      entityKey: fresh.public_id,
+      actor: fresh.public_id,
       detail: { expiresAt: session.expiresAt },
     });
 
@@ -147,11 +194,11 @@ export function createAuthRouter(deps: AuthRouteDeps): Router {
       token: session.token,
       expiresAt: session.expiresAt,
       user: {
-        publicId: account.public_id,
-        username: account.username,
-        role: account.role,
+        publicId: fresh.public_id,
+        username: fresh.username,
+        role: fresh.role,
       },
-      mustChangePassword: account.must_change_password === 1,
+      mustChangePassword: fresh.must_change_password === 1,
     });
   });
 
