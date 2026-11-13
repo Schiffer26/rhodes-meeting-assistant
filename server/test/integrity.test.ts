@@ -467,3 +467,112 @@ test('soft-deleting a meeting keeps its revisions readable and appendable', () =
     removeDir(dir);
   }
 });
+
+// ── 5. REPLACE conflict resolution cannot bypass the history guards ─────────
+//
+// SQLite's REPLACE strategy satisfies a uniqueness conflict by deleting the row that is
+// in the way. With recursive triggers disabled that delete does NOT fire the BEFORE
+// DELETE trigger, so `INSERT OR REPLACE` used to overwrite a stored revision silently.
+// The connection now enables recursive triggers and refuses to start without them; these
+// tests prove every REPLACE route is closed and that the stored row survives untouched.
+
+test('INSERT OR REPLACE cannot overwrite an existing note revision', () => {
+  const dir = tempDataDir();
+  try {
+    const { db } = openMigrated(dir);
+    try {
+      const meetingId = insertMeeting(db);
+      insert(db, 'note_revisions', { meeting_id: meetingId, revision_no: 1, content: 'Original text' });
+
+      assert.throws(
+        () =>
+          db.handle
+            .prepare('insert or replace into note_revisions (meeting_id, revision_no, content) values (?, 1, ?)')
+            .run(meetingId, 'Overwritten text'),
+        /cannot be deleted/,
+      );
+
+      const rows = db.handle
+        .prepare('select revision_no, content from note_revisions where meeting_id = ?')
+        .all(meetingId) as { revision_no: number; content: string }[];
+      assert.deepEqual(rows, [{ revision_no: 1, content: 'Original text' }], 'the original revision must survive intact');
+    } finally {
+      db.close();
+    }
+  } finally {
+    removeDir(dir);
+  }
+});
+
+test('UPDATE OR REPLACE cannot replace one revision with another', () => {
+  const dir = tempDataDir();
+  try {
+    const { db } = openMigrated(dir);
+    try {
+      const meetingId = insertMeeting(db);
+      insert(db, 'note_revisions', { meeting_id: meetingId, revision_no: 1, content: 'First' });
+      insert(db, 'note_revisions', { meeting_id: meetingId, revision_no: 2, content: 'Second' });
+
+      // Rewriting revision 2 onto number 1 would delete revision 1 to satisfy the
+      // UNIQUE (meeting_id, revision_no) constraint.
+      assert.throws(
+        () =>
+          db.handle
+            .prepare('update or replace note_revisions set revision_no = 1 where meeting_id = ? and revision_no = 2')
+            .run(meetingId),
+        /append-only|cannot be deleted/,
+      );
+
+      const rows = db.handle
+        .prepare('select revision_no, content from note_revisions where meeting_id = ? order by revision_no')
+        .all(meetingId) as { revision_no: number; content: string }[];
+      assert.deepEqual(rows, [
+        { revision_no: 1, content: 'First' },
+        { revision_no: 2, content: 'Second' },
+      ]);
+    } finally {
+      db.close();
+    }
+  } finally {
+    removeDir(dir);
+  }
+});
+
+test('ordinary DELETE and UPDATE of a revision are still refused, and appends still work', () => {
+  const dir = tempDataDir();
+  try {
+    const { db } = openMigrated(dir);
+    try {
+      const meetingId = insertMeeting(db);
+      insert(db, 'note_revisions', { meeting_id: meetingId, revision_no: 1, content: 'Original' });
+
+      assert.throws(
+        () => db.handle.prepare('delete from note_revisions where meeting_id = ?').run(meetingId),
+        /cannot be deleted/,
+      );
+      assert.throws(
+        () => db.handle.prepare('update note_revisions set content = ? where meeting_id = ?').run('Rewritten', meetingId),
+        /append-only/,
+      );
+
+      const after = db.handle
+        .prepare('select revision_no, content from note_revisions where meeting_id = ?')
+        .all(meetingId) as { revision_no: number; content: string }[];
+      assert.deepEqual(after, [{ revision_no: 1, content: 'Original' }]);
+
+      // Normal appends are unaffected by any of this.
+      insert(db, 'note_revisions', { meeting_id: meetingId, revision_no: 2, content: 'Added later' });
+      const appended = db.handle
+        .prepare('select revision_no, content from note_revisions where meeting_id = ? order by revision_no')
+        .all(meetingId) as { revision_no: number; content: string }[];
+      assert.deepEqual(appended, [
+        { revision_no: 1, content: 'Original' },
+        { revision_no: 2, content: 'Added later' },
+      ]);
+    } finally {
+      db.close();
+    }
+  } finally {
+    removeDir(dir);
+  }
+});

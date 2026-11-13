@@ -117,9 +117,20 @@ share. `resolveDataDir` therefore resolves the path before accepting it.
 A refused path is never redirected to somewhere "safe"; the service exits with a
 configuration error, because quietly writing a database to a different location than the
 operator configured is worse than not starting. Nothing is created before validation
-succeeds, so a refused configuration leaves no directory behind. An entry that exists but
-cannot be resolved (broken link, link loop) is rejected as
-`config.data_dir_unresolvable` rather than being treated as "does not exist yet".
+succeeds, so a refused configuration leaves no directory behind.
+
+Resolution is **fail-closed** and distinguishes three outcomes at each step:
+
+| Result | Meaning | Action |
+| --- | --- | --- |
+| resolves | the component exists | check it is a directory if further segments remain, then stop |
+| `ENOENT` / `ENOTDIR`, and `lstat` agrees nothing is there | not created yet | step up to the parent and continue |
+| anything else (`EACCES`, `EPERM`, `ELOOP`, `EIO`, …) or a dangling entry | the target cannot be known | refuse with `config.data_dir_unresolvable`, recording the errno |
+
+A dangling symbolic link reports `ENOENT` from `realpath` but is visible to `lstat`, so it
+is refused as unresolvable rather than mistaken for "does not exist yet". When segments
+remain below an existing ancestor, that ancestor must be a directory: an ordinary file in
+that position is refused as `config.data_dir_not_a_directory`, never traversed.
 
 ---
 
@@ -161,6 +172,15 @@ then **verifies** these settings:
 | `synchronous` | `FULL` | A committed meeting record survives a power cut |
 | `foreign_keys` | `ON` | SQLite defaults this to OFF, which would allow silent orphans |
 | `busy_timeout` | configured (5 s) | Wait for the lock instead of failing instantly |
+| `recursive_triggers` | `ON` | Without it, `REPLACE` can delete a row without firing its delete trigger (see below) |
+
+`recursive_triggers` is a correctness requirement, not a tuning knob. SQLite satisfies a
+`REPLACE` conflict by *deleting* the row in the way, and that deletion fires `BEFORE
+DELETE` triggers **only when recursive triggers are enabled**. With the default setting,
+`INSERT OR REPLACE INTO note_revisions …` overwrote a stored minute revision without the
+append-only guard ever running — reproduced in this environment and now closed. Each
+setting above is read back after it is applied, and the service refuses to start if any
+of them did not take (`db.recursive_triggers_unavailable` included).
 
 Startup also runs `PRAGMA quick_check`; a damaged file fails the service rather than
 serving it. Shutdown (SIGINT/SIGTERM) closes the listener, ends keep-alive sockets,
@@ -264,6 +284,11 @@ hard-deleted at all — ordinary `DELETE` is refused with a message pointing at
 appended. Meetings without history remain hard-deletable, along with their dependent
 rows.
 
+The guards are only as strong as the conflict resolution mode: `INSERT OR REPLACE` and
+`UPDATE OR REPLACE` take the delete path, which needs `recursive_triggers = ON` to fire
+the guard (see §5). With that enabled, both are refused like any other deletion, and the
+stored revision keeps its number and its text.
+
 > **Permanent purging is deliberately unimplemented.** Should a meeting's history ever
 > have to be destroyed for a legal or operational reason, that must be an explicit,
 > separately reviewed administrative procedure with its own audit trail — not an
@@ -279,6 +304,12 @@ rows.
    `*.sql text eol=lf`, so a Windows checkout and a Linux checkout of the same
    migration hash identically. Changing a statement, a comment or whitespace inside a
    line still changes the checksum, exactly as before.
+   **Databases created before normalisation** (LAN-1) recorded the hash of the raw file
+   — from a CRLF checkout that is a different value. Such a record is accepted when it
+   equals the SHA-256 of the same migration's text with Windows line endings
+   (`legacyChecksums`). The rule is narrow: it is still a hash of *this* content, any
+   real edit changes every variant, the recorded value is never rewritten, and a warning
+   (`migration.legacy_checksum_accepted`) is logged so the older provenance is visible.
 2. Write forward-only SQL. If a migration fails, its transaction rolls back and the
    previous version stays intact; fix the file and run again.
 3. Apply: `npm run server:migrate` (or just start the service — migrations run at
@@ -412,3 +443,10 @@ office, verify on the actual Windows host:
    has not been performed — only the equivalent-text test on one machine.
 10. Date/time and agenda-relationship triggers under the Windows build of SQLite
     (same version, 3.54.1, but confirm `date()`/`strftime()` behave identically).
+11. **Windows permission semantics.** The fail-closed path resolver maps `EACCES` /
+    `EPERM` to `config.data_dir_unresolvable`. Node surfaces Windows ACL denials through
+    the same errno values, but only Linux has been exercised here — confirm with a
+    directory whose ACL denies the service account.
+12. **REPLACE protection on Windows.** `PRAGMA recursive_triggers` is a connection-level
+    SQLite setting, identical on every platform, but the `INSERT OR REPLACE` refusal has
+    only been demonstrated on Linux.

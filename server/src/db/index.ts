@@ -13,6 +13,11 @@
  *   foreign_keys = ON       SQLite defaults this OFF, which would silently permit orphans.
  *   busy_timeout = N        a writer waits instead of failing instantly when another
  *                           connection (a backup job, a migration) holds the lock.
+ *   recursive_triggers = ON REPLACE conflict resolution deletes the conflicting row,
+ *                           and that deletion only fires the BEFORE DELETE trigger when
+ *                           recursive triggers are enabled. Without it, `INSERT OR
+ *                           REPLACE` walks straight past the note-revision history
+ *                           guard (see #applyPragmas).
  */
 
 import { existsSync, mkdirSync, statSync } from 'node:fs';
@@ -132,6 +137,27 @@ export class RhodesDatabase {
     const foreignKeys = this.#db.pragma('foreign_keys', { simple: true });
     if (Number(foreignKeys) !== 1) {
       throw new DatabaseError('db.foreign_keys_unavailable', 'Foreign-key enforcement could not be enabled.');
+    }
+
+    // SQLite's REPLACE conflict resolution satisfies a uniqueness conflict by DELETING
+    // the row that is in the way. With recursive triggers off — the default — that
+    // deletion does not fire BEFORE DELETE triggers, so
+    //     INSERT OR REPLACE INTO note_revisions (meeting_id, revision_no, content) …
+    // would silently replace a stored revision and destroy minute history, even though
+    // the table has a trigger that forbids deleting one. There is no statement-level
+    // "forbid REPLACE" switch, so the delete trigger must be made to fire. Verified at
+    // open: if the setting cannot be applied, the service refuses to run rather than
+    // accept writes its own schema is meant to reject.
+    this.#db.pragma('recursive_triggers = ON');
+    const recursiveTriggers = Number(this.#db.pragma('recursive_triggers', { simple: true }));
+    if (recursiveTriggers !== 1) {
+      throw new DatabaseError(
+        'db.recursive_triggers_unavailable',
+        'Recursive triggers could not be enabled. With them disabled, REPLACE conflict ' +
+          'resolution can overwrite note revision history without firing the delete guard, ' +
+          'so the database would not be able to honour its own history rules. Refusing to start.',
+        { details: { recursiveTriggers } },
+      );
     }
 
     this.#db.pragma('synchronous = FULL');

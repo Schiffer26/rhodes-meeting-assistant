@@ -149,26 +149,63 @@ export function resolveRealPath(target: string): string {
   const tail: string[] = [];
 
   for (;;) {
-    if (existsSync(probe)) {
-      const real = stripWindowsLongPathPrefix(realpathSync.native(probe));
-      return tail.length === 0 ? real : path.join(real, ...tail);
+    let real: string | null = null;
+    try {
+      real = stripWindowsLongPathPrefix(realpathSync.native(probe));
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+        // EACCES, EPERM, ELOOP, EIO, ENAMETOOLONG … — the real location cannot be
+        // determined at all. This is the fail-closed case: never guess, never walk past
+        // a component whose target is unknown.
+        throw unresolvable(probe, code);
+      }
+
+      // ENOENT / ENOTDIR mean "this component is not there yet" — or, for a broken
+      // symbolic link, that the entry exists but leads nowhere. `lstat` looks at the
+      // entry itself and separates the two; anything it cannot read is fatal.
+      let entryExists = false;
+      try {
+        lstatSync(probe);
+        entryExists = true;
+      } catch (lstatError) {
+        const lstatCode = (lstatError as NodeJS.ErrnoException).code;
+        if (lstatCode !== 'ENOENT' && lstatCode !== 'ENOTDIR') {
+          throw unresolvable(probe, lstatCode);
+        }
+      }
+      if (entryExists) {
+        throw new ConfigError(
+          'config.data_dir_unresolvable',
+          'RHODES_DATA_DIR could not be resolved to a real location on this computer. ' +
+            `"${path.basename(probe)}" exists but leads nowhere (a broken symbolic link), so the ` +
+            'target is unknowable. Refusing to start.',
+          { path: probe },
+        );
+      }
     }
 
-    // `existsSync` follows links, so it reports false both for "not created yet" and for
-    // "exists but leads nowhere" (broken link, link loop). Those two are not the same:
-    // the first is normal, the second means the real location is unknowable. `lstat`
-    // sees the directory entry itself and separates them.
-    let entryExists = false;
-    try {
-      lstatSync(probe);
-      entryExists = true;
-    } catch {
-      entryExists = false;
-    }
-    if (entryExists) {
-      throw new Error(
-        `"${path.basename(probe)}" exists but cannot be resolved to a real location (broken link or link loop)`,
-      );
+    if (real !== null) {
+      if (tail.length > 0) {
+        // Segments remain below this ancestor, so the ancestor has to be a directory.
+        // A regular file in that position can never become a data directory.
+        let stats;
+        try {
+          stats = statSync(real);
+        } catch (error) {
+          throw unresolvable(real, (error as NodeJS.ErrnoException).code);
+        }
+        if (!stats.isDirectory()) {
+          throw new ConfigError(
+            'config.data_dir_not_a_directory',
+            'RHODES_DATA_DIR cannot be created: a component on the way to it is an existing ' +
+              `file, not a directory ("${path.basename(real)}"). Refusing to start.`,
+            { path: real },
+          );
+        }
+      }
+      return tail.length === 0 ? real : path.join(real, ...tail);
     }
 
     const parent = path.dirname(probe);
@@ -177,6 +214,18 @@ export function resolveRealPath(target: string): string {
     tail.unshift(path.basename(probe));
     probe = parent;
   }
+}
+
+/** One shape for "the target cannot be known", with the errno kept for the operator. */
+function unresolvable(target: string, code: string | undefined): ConfigError {
+  return new ConfigError(
+    'config.data_dir_unresolvable',
+    'RHODES_DATA_DIR could not be resolved to a real location on this computer' +
+      (code ? ` (${code})` : '') +
+      '. A permission problem, a broken link, or a symbolic-link loop makes the target ' +
+      'unknowable, so the service will not start.',
+    { path: target, code: code ?? null },
+  );
 }
 
 /**
@@ -272,8 +321,11 @@ function resolveDataDir(raw: string | undefined, nodeEnv: NodeEnv, env: EnvSourc
   // rewritten — an unsafe location is refused, never silently redirected.
   let real: string;
   try {
-    real = stripWindowsLongPathPrefix(resolveRealPath(absolute));
+    // resolveRealPath already reports a specific, fail-closed reason (unresolvable or
+    // not-a-directory); only an unexpected throw is generalised here.
+    real = resolveRealPath(absolute);
   } catch (error) {
+    if (error instanceof ConfigError) throw error;
     throw new ConfigError(
       'config.data_dir_unresolvable',
       'RHODES_DATA_DIR could not be resolved to a real location on this computer. ' +

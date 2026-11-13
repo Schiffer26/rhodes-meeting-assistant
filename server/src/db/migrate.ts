@@ -29,7 +29,13 @@ export interface MigrationFile {
   readonly version: number;
   readonly name: string;
   readonly filePath: string;
+  /** Canonical checksum: SHA-256 of the LF-normalised text. */
   readonly checksum: string;
+  /**
+   * Checksums that count as "this same migration, already applied": the canonical one
+   * plus any pre-LAN-1.1 line-ending variant. Used only for verification.
+   */
+  readonly acceptedChecksums: readonly string[];
 }
 
 export interface AppliedMigration {
@@ -69,12 +75,39 @@ export function normaliseNewlines(sql: string): string {
   return sql.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 }
 
+function sha256(text: string): string {
+  return createHash('sha256').update(text, 'utf8').digest('hex');
+}
+
 /**
  * Checksum of a migration's *content*, independent of checkout line endings.
  * SHA-256 over the normalised UTF-8 text.
  */
 export function checksumOf(text: string): string {
-  return createHash('sha256').update(normaliseNewlines(text), 'utf8').digest('hex');
+  return sha256(normaliseNewlines(text));
+}
+
+/**
+ * Checksums a pre-LAN-1.1 runner could have recorded for this same migration.
+ *
+ * Before line-ending normalisation existed, the runner hashed the file exactly as it
+ * was read from disk. A database created on a CRLF checkout therefore holds
+ * `sha256(<sql with CRLF>)`, which the normalising runner will never compute again.
+ * Without this, such a database would be refused at startup with a checksum mismatch
+ * that is not a real mismatch — the SQL is identical.
+ *
+ * The rule is deliberately narrow: the accepted values are SHA-256 hashes of *this*
+ * migration's text with Windows line endings and of the raw bytes as read today. Any
+ * change to the SQL itself — one character, one comment — changes all of them, so a
+ * genuinely edited migration still fails verification. Nothing is rewritten: the
+ * recorded checksum stays exactly as it was found.
+ */
+export function legacyChecksums(text: string): string[] {
+  const canonical = checksumOf(text);
+  const normalised = normaliseNewlines(text);
+  const candidates = new Set<string>([sha256(text), sha256(normalised.replace(/\n/g, '\r\n'))]);
+  candidates.delete(canonical);
+  return [...candidates];
 }
 
 export function loadMigrationFiles(migrationsDir: string): MigrationFile[] {
@@ -105,10 +138,17 @@ export function loadMigrationFiles(migrationsDir: string): MigrationFile[] {
     }
     seen.set(version, entry);
     const filePath = path.join(migrationsDir, entry);
-    // Read and normalise once: the recorded checksum and the executed statement come
-    // from the same normalised text, so the two can never disagree.
-    const sql = normaliseNewlines(readFileSync(filePath, 'utf8'));
-    files.push({ version, name, filePath, checksum: checksumOf(sql) });
+    const raw = readFileSync(filePath, 'utf8');
+    // The canonical checksum comes from normalised text; the legacy variants are derived
+    // from the same read so verification and execution can never disagree.
+    const checksum = checksumOf(raw);
+    files.push({
+      version,
+      name,
+      filePath,
+      checksum,
+      acceptedChecksums: [checksum, ...legacyChecksums(raw)],
+    });
   }
 
   if (files.length === 0) {
@@ -153,13 +193,24 @@ export function runMigrations(
         { version: row.version, name: row.name },
       );
     }
-    if (file.checksum !== row.checksum) {
+    if (!file.acceptedChecksums.includes(row.checksum)) {
       throw new MigrationError(
         'migration.checksum_mismatch',
         `Migration ${row.version} (${file.name}) has changed since it was applied. ` +
           'Applied migrations are immutable; add a new migration instead of editing this one.',
         { version: row.version, expected: row.checksum, actual: file.checksum },
       );
+    }
+    if (row.checksum !== file.checksum) {
+      // Verified through a pre-LAN-1.1 line-ending variant. The recorded value is left
+      // untouched on purpose: silently rewriting history would hide the fact that this
+      // database was created by an older runner.
+      logger.warn('migration.legacy_checksum_accepted', {
+        version: row.version,
+        name: row.name,
+        recorded: row.checksum,
+        canonical: file.checksum,
+      });
     }
   }
 

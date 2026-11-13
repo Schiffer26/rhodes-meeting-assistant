@@ -6,7 +6,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdirSync, existsSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 
@@ -225,6 +225,76 @@ test('resolveRealPath resolves the nearest existing ancestor and keeps the tail'
     assert.ok(path.isAbsolute(resolved));
     // An existing directory resolves to itself.
     assert.equal(resolveRealPath(base), resolveRealPath(base));
+  } finally {
+    removeDir(base);
+  }
+});
+
+/** Run the loader and return the ConfigError it threw, for details assertions. */
+function caughtConfigError(fn: () => unknown): ConfigError {
+  try {
+    fn();
+  } catch (error) {
+    if (error instanceof ConfigError) return error;
+    throw error;
+  }
+  throw new Error('expected a ConfigError, but the call succeeded');
+}
+
+test('an inaccessible ancestor is refused, not treated as a missing component', (t) => {
+  const base = tempDataDir();
+  const locked = path.join(base, 'locked');
+  try {
+    if (process.getuid?.() === 0) {
+      t.skip('running as root: directory permissions are not enforced');
+      return;
+    }
+    mkdirSync(locked, { recursive: true });
+    chmodSync(locked, 0o000);
+
+    const error = caughtConfigError(() => loadConfig({ RHODES_DATA_DIR: path.join(locked, 'data') }));
+    assert.equal(error.code, 'config.data_dir_unresolvable');
+    assert.ok(
+      (error.details?.code === 'EACCES' || error.details?.code === 'EPERM'),
+      `expected a permission errno, received ${String(error.details?.code)}`,
+    );
+    // Fail-closed: nothing was created behind the unreadable directory.
+    assert.equal(existsSync(path.join(locked, 'data')), false);
+  } finally {
+    chmodSync(locked, 0o700);
+    removeDir(base);
+  }
+});
+
+test('an existing file cannot act as an ancestor of the data directory', () => {
+  const base = tempDataDir();
+  try {
+    const file = path.join(base, 'blocker.txt');
+    writeFileSync(file, 'not a directory');
+
+    // A directory "underneath" a file can never be created.
+    expectConfigError(() => loadConfig({ RHODES_DATA_DIR: path.join(file, 'data') }), 'config.data_dir_not_a_directory');
+    // The plain case (the configured path is itself a file) still reports the same code.
+    expectConfigError(() => loadConfig({ RHODES_DATA_DIR: file }), 'config.data_dir_not_a_directory');
+  } finally {
+    removeDir(base);
+  }
+});
+
+test('a broken symbolic link is refused as unresolvable', (t) => {
+  const base = tempDataDir();
+  try {
+    const missingTarget = path.join(base, 'vanished-target');
+    const link = path.join(base, 'broken-link');
+    if (!makeSymlink(missingTarget, link)) {
+      t.skip('symbolic links are not supported in this environment');
+      return;
+    }
+
+    expectConfigError(() => loadConfig({ RHODES_DATA_DIR: link }), 'config.data_dir_unresolvable');
+    expectConfigError(() => loadConfig({ RHODES_DATA_DIR: path.join(link, 'data') }), 'config.data_dir_unresolvable');
+    // A dangling link is not "a directory that has not been created yet".
+    assert.equal(existsSync(path.join(base, 'data')), false);
   } finally {
     removeDir(base);
   }

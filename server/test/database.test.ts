@@ -36,6 +36,9 @@ test('case 7: WAL journal mode is active on the database file', () => {
       assert.equal(Number(db.handle.pragma('synchronous', { simple: true })), 2);
       assert.equal(Number(db.handle.pragma('foreign_keys', { simple: true })), 1);
       assert.equal(Number(db.handle.pragma('busy_timeout', { simple: true })), 5000);
+      // Without this, REPLACE conflict resolution could delete a note revision without
+      // firing the BEFORE DELETE guard (LAN-1.1a).
+      assert.equal(Number(db.handle.pragma('recursive_triggers', { simple: true })), 1);
     } finally {
       db.close();
     }

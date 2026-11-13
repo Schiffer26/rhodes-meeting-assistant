@@ -7,6 +7,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { cpSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -346,5 +347,128 @@ test('LF, CRLF and CR line endings produce an identical migration checksum', () 
     assert.equal(checksumOf(repoMigration), checksumOf(repoMigration.replace(/\n/g, '\r\n')));
   } finally {
     removeDir(dir);
+  }
+});
+
+// ── LAN-1.1a: compatibility with checksums recorded before normalisation ─────
+//
+// LAN-1 hashed the raw file it read. A database created from a CRLF checkout therefore
+// holds sha256(<sql with CRLF>), a value the normalising runner never computes. Reproduce
+// that database honestly — legacy algorithm, CRLF bytes on disk, no help from the current
+// code — and prove it still verifies, upgrades, and keeps its recorded checksum.
+
+const LEGACY_0001_LF = readFileSync(path.join(MIGRATIONS_DIR, '0001-initial-schema.sql'), 'utf8');
+
+/** Recreate what the LAN-1 runner produced from a CRLF checkout of migration 0001. */
+function createLegacyCrlfDatabase(dataDir: string, workDir: string): { legacyChecksum: string; crlfSql: string } {
+  const crlfSql = LEGACY_0001_LF.replace(/\n/g, '\r\n');
+  const filePath = path.join(workDir, '0001-initial-schema.sql');
+  writeFileSync(filePath, crlfSql, 'utf8');
+
+  // The LAN-1 algorithm, verbatim: hash the file exactly as read from disk.
+  const onDisk = readFileSync(filePath, 'utf8');
+  const legacyChecksum = createHash('sha256').update(onDisk, 'utf8').digest('hex');
+
+  const db = openDatabase(configFor(dataDir));
+  try {
+    db.handle.exec(
+      'create table if not exists schema_migrations (' +
+        'version integer primary key, name text not null, checksum text not null, applied_at text not null)',
+    );
+    db.handle.exec(onDisk);
+    db.handle
+      .prepare('insert into schema_migrations (version, name, checksum, applied_at) values (?, ?, ?, ?)')
+      .run(1, 'initial-schema', legacyChecksum, '2026-01-01T00:00:00.000Z');
+    db.handle.pragma('user_version = 1');
+  } finally {
+    db.close();
+  }
+
+  return { legacyChecksum, crlfSql };
+}
+
+test('a version-1 database recorded from a CRLF checkout still verifies and upgrades', () => {
+  const dir = tempDataDir();
+  const workDir = mkdtempSync(path.join(tmpdir(), 'rhodes-legacy-crlf-'));
+  try {
+    const config = configFor(dir);
+    const { legacyChecksum } = createLegacyCrlfDatabase(dir, workDir);
+
+    // The fixture is genuinely different from what the current runner computes,
+    // which is exactly the situation LAN-1.1 would otherwise have refused.
+    assert.ok(/\r\n/.test(LEGACY_0001_LF.replace(/\n/g, '\r\n')));
+    assert.notEqual(
+      legacyChecksum,
+      checksumOf(LEGACY_0001_LF),
+      'a CRLF checkout must really hash differently from the normalised form',
+    );
+
+    const db = openDatabase(config);
+    try {
+      db.handle.prepare("insert into meetings (title, meeting_date) values ('Legacy CRLF meeting', '2026-03-11')").run();
+
+      // Opening with the current runner must recognise 0001 rather than refuse it.
+      const upgrade = runMigrations(db.handle, { migrationsDir: MIGRATIONS_DIR });
+      assert.deepEqual(upgrade.applied, [{ version: 2, name: 'integrity-hardening' }]);
+      assert.equal(db.schemaVersion(), 2);
+
+      // The recorded checksum is left exactly as found — verified, not rewritten.
+      const stored = db.handle
+        .prepare('select version, checksum from schema_migrations order by version')
+        .all() as { version: number; checksum: string }[];
+      assert.equal(stored.length, 2);
+      assert.equal(stored[0]?.checksum, legacyChecksum, 'the legacy checksum must not be overwritten');
+      assert.equal(stored[1]?.checksum, checksumOf(readFileSync(path.join(MIGRATIONS_DIR, '0002-integrity-hardening.sql'), 'utf8')));
+
+      // Existing records survive and the new rules are live.
+      const kept = db.handle.prepare('select title from meetings').get() as { title: string };
+      assert.equal(kept.title, 'Legacy CRLF meeting');
+      assert.throws(
+        () => db.handle.prepare("update meetings set meeting_date = '2025-02-29'").run(),
+        /real calendar date/,
+      );
+    } finally {
+      db.close();
+    }
+  } finally {
+    removeDir(dir);
+    removeDir(workDir);
+  }
+});
+
+test('a legacy CRLF checksum does not excuse an edited migration', () => {
+  const dir = tempDataDir();
+  const workDir = mkdtempSync(path.join(tmpdir(), 'rhodes-legacy-edit-'));
+  const editedDir = mkdtempSync(path.join(tmpdir(), 'rhodes-legacy-edited-'));
+  try {
+    const config = configFor(dir);
+    createLegacyCrlfDatabase(dir, workDir);
+
+    // A migrations directory that looks legitimate but whose 0001 has been edited.
+    cpSync(path.join(MIGRATIONS_DIR, '0002-integrity-hardening.sql'), path.join(editedDir, '0002-integrity-hardening.sql'));
+    writeFileSync(
+      path.join(editedDir, '0001-initial-schema.sql'),
+      LEGACY_0001_LF + '\n-- edited after release\n',
+      'utf8',
+    );
+
+    const db = openDatabase(config);
+    try {
+      assert.throws(
+        () => runMigrations(db.handle, { migrationsDir: editedDir }),
+        (error: unknown) => {
+          assert.ok(error instanceof MigrationError);
+          assert.equal(error.code, 'migration.checksum_mismatch');
+          return true;
+        },
+      );
+      assert.equal(db.schemaVersion(), 1, 'the database must not be advanced by a failed verification');
+    } finally {
+      db.close();
+    }
+  } finally {
+    removeDir(dir);
+    removeDir(workDir);
+    removeDir(editedDir);
   }
 });
