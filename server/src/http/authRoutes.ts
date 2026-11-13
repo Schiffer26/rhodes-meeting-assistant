@@ -8,6 +8,15 @@
  *
  * Everything here is `Cache-Control: no-store`, and nothing a caller sends is echoed in
  * a response or written to a log.
+ *
+ * ── oversized passwords never reach the key derivation (LAN-2.1 correction) ─
+ *
+ * The password ceiling is enforced on the sign-in path, before any account lookup and
+ * before any scrypt call. An oversized value cannot match a stored password — every
+ * stored one is capped at the same length — so hashing it would only burn a KDF slot.
+ * The attempt is counted against the login throttle and answered with the same generic
+ * failure as any other wrong credential, whether or not the username exists, so nothing
+ * about the account is revealed by the shape of the response.
  */
 
 import { Router } from 'express';
@@ -18,6 +27,7 @@ import {
   changeOwnPassword,
   findByUsername,
   toAccountSummary,
+  type ActorHandle,
 } from '../auth/accounts.js';
 import { recordAudit } from '../auth/audit.js';
 import {
@@ -27,7 +37,7 @@ import {
   tooManyAttempts,
 } from '../auth/errors.js';
 import { hashPassword, verifyAgainstDummyHash, verifyPassword } from '../auth/password.js';
-import { normalizeUsername, validatePassword } from '../auth/policy.js';
+import { normalizeUsername, passwordExceedsLimit, validatePassword } from '../auth/policy.js';
 import { LoginRateLimiter } from '../auth/rateLimit.js';
 import { createSession, purgeExpiredSessions, revokeSession } from '../auth/sessions.js';
 import { noStore } from './respond.js';
@@ -36,6 +46,12 @@ export interface AuthRouteDeps {
   readonly db: RhodesDatabase;
   readonly now: () => Date;
   readonly limiter: LoginRateLimiter;
+  /**
+   * Key derivation for a new password. Injectable so a test can perform a concurrent
+   * security operation at exactly the moment the route is awaiting the hash, instead of
+   * guessing with sleeps.
+   */
+  readonly passwordHasher?: (password: string) => Promise<string>;
 }
 
 interface CredentialsBody {
@@ -47,6 +63,7 @@ export function createAuthRouter(deps: AuthRouteDeps): Router {
   const router = Router();
   router.use(noStore);
 
+  const hasher = deps.passwordHasher ?? hashPassword;
   const authenticate = requireAuth({ db: deps.db.handle, now: deps.now });
 
   router.post('/login', async (req, res) => {
@@ -68,11 +85,30 @@ export function createAuthRouter(deps: AuthRouteDeps): Router {
     }
 
     deps.limiter.prune();
+
+    // The ceiling, before the account is even looked up. No account lookup means no
+    // difference between a real and an unknown username, and no key derivation means an
+    // oversized value (a megabyte of text, say) costs a few microseconds instead of
+    // occupying a hashing slot.
+    if (passwordExceedsLimit(body.password)) {
+      deps.limiter.recordFailure(normalized, address);
+      recordAudit(db, {
+        action: 'auth.login_failed',
+        entity: 'user_account',
+        entityKey: null,
+        outcome: 'denied',
+        // The value itself is never recorded, only that it was over the limit.
+        detail: { reason: 'password_over_limit' },
+      });
+      throw invalidCredentials();
+    }
+
     const account = findByUsername(db, normalized);
 
     if (!account) {
       // Spend the same work as a real verification so the response time does not reveal
-      // whether the username exists, then fail identically.
+      // whether the username exists, then fail identically. If the KDF pool is saturated
+      // this raises 503 here exactly as it would for a real account.
       await verifyAgainstDummyHash(body.password);
       deps.limiter.recordFailure(normalized, address);
       throw invalidCredentials();
@@ -165,6 +201,10 @@ export function createAuthRouter(deps: AuthRouteDeps): Router {
     const account = findByUsername(db, auth.username);
     if (!account) throw invalidCredentials();
 
+    // Same ceiling on the value being *verified*: no stored password is this long, so
+    // hashing it would be pure waste.
+    if (passwordExceedsLimit(body.currentPassword)) throw currentPasswordIncorrect();
+
     if (!(await verifyPassword(body.currentPassword, account.password_hash))) {
       throw currentPasswordIncorrect();
     }
@@ -172,13 +212,16 @@ export function createAuthRouter(deps: AuthRouteDeps): Router {
     // Full policy applies to the new password, including the length ceiling: an
     // over-long input is refused here, before scrypt is ever invoked.
     validatePassword(body.newPassword);
-    const passwordHash = await hashPassword(body.newPassword);
+    const passwordHash = await hasher(body.newPassword);
 
-    // Every session dies, including this one. The caller must sign in again with the new
-    // password, which is what proves the change reached them.
+    // The await above is a window: an administrator may have reset this password, or the
+    // session may have been revoked. Both are rechecked inside the write transaction,
+    // against the hash that was actually verified above.
     const sessionsRevoked = changeOwnPassword(db, {
       accountId: account.id,
-      passwordHash,
+      sessionId: auth.sessionId,
+      expectedPasswordHash: account.password_hash,
+      newPasswordHash: passwordHash,
       actorPublicId: auth.publicId,
       now: deps.now().toISOString(),
     });
@@ -187,4 +230,10 @@ export function createAuthRouter(deps: AuthRouteDeps): Router {
   });
 
   return router;
+}
+
+/** Build the revalidation handle from the authenticated request context. */
+export function actorFrom(req: Parameters<typeof currentAuth>[0]): ActorHandle {
+  const auth = currentAuth(req);
+  return { accountId: auth.accountId, sessionId: auth.sessionId, publicId: auth.publicId };
 }

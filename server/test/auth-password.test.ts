@@ -1,11 +1,12 @@
 /**
- * Password storage and the key-derivation limiter.
+ * Password storage, the resource budget and the key-derivation limiter.
  *
  * The properties that matter, and nothing else:
  *   · a password is never stored, only a salted scrypt hash;
  *   · the same password hashes differently every time (fresh random salt);
- *   · the stored format describes itself, so parameters can change without breaking
- *     existing rows — and a row claiming absurd parameters is refused, not obeyed;
+ *   · the stored format describes itself, but only allowlisted profiles are obeyed — a
+ *     row cannot choose how much memory this process commits (LAN-2.1);
+ *   · encoded salts and keys are size-checked before they are decoded;
  *   · passwords are handled byte for byte: no trimming, no normalisation, no truncation,
  *     and the 128-character ceiling is enforced before any key derivation runs;
  *   · no more than a fixed number of hashes run at once, with a bounded queue behind them.
@@ -16,17 +17,27 @@ import test from 'node:test';
 
 import { AppError } from '../src/errors.js';
 import {
-  MAX_CONCURRENT_HASHES,
-  MAX_QUEUED_HASHES,
   hashPassword,
   kdfStats,
+  LEGACY_PROFILE,
+  MAX_CONCURRENT_HASHES,
+  MAX_QUEUED_HASHES,
   needsRehash,
   parsePasswordHash,
+  PRODUCTION_PROFILE,
+  profileMemoryBytes,
+  SCRYPT_MAX_MEMORY,
   SCRYPT_PARAMS,
+  SUPPORTED_PROFILES,
   verifyPassword,
 } from '../src/auth/password.js';
 import { PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH, passwordLength, validatePassword } from '../src/auth/policy.js';
 import { fastHash, TEST_SCRYPT } from './auth-helpers.js';
+
+/** How many derivations have actually reached scrypt. */
+function invocations(): number {
+  return kdfStats().invocations;
+}
 
 test('a password is never stored: the hash is self-describing and contains no plaintext', async () => {
   const password = 'a sufficiently long passphrase';
@@ -49,6 +60,7 @@ test('a password is never stored: the hash is self-describing and contains no pl
   assert.equal(parsed.p, 1);
   assert.equal(parsed.salt.length, 16);
   assert.equal(parsed.key.length, 64);
+  assert.equal(parsed.profile, PRODUCTION_PROFILE);
 });
 
 test('the same password hashes differently every time, because the salt is random', async () => {
@@ -116,34 +128,117 @@ test('the policy floor and ceiling are enforced, and nothing else is', () => {
   validatePassword('a long but boring lowercase passphrase');
 });
 
-test('a stored hash with unsupported or dangerous parameters is refused, not executed', async () => {
-  const good = await fastHash('a sufficiently long passphrase');
-  const [, , , salt, key] = good.split('$');
+// ── LAN-2.1: the resource budget ──────────────────────────────────────────────
 
-  const cases = [
-    '',
-    'not-a-hash',
-    `bcrypt$1$N=${TEST_SCRYPT.N},r=8,p=1$${salt}$${key}`,
-    `scrypt$2$N=${TEST_SCRYPT.N},r=8,p=1$${salt}$${key}`,
-    `scrypt$1$N=1024,r=8,p=1$${salt}$${key}`, // below the floor
-    `scrypt$1$N=1073741824,r=8,p=1$${salt}$${key}`, // a gigabyte-scale N: must not be obeyed
-    `scrypt$1$N=16384,r=64,p=1$${salt}$${key}`, // r out of range
-    `scrypt$1$N=16384,r=8,p=1$${salt}`, // truncated
-    `scrypt$1$N=16384,r=8,p=1$$${key}`, // no salt
-    `scrypt$1$N=16384,r=8,p=1$${salt}$${salt}`, // key too short
+test('the allowlist is exactly two profiles, and every one of them fits the memory budget', () => {
+  assert.deepEqual(SUPPORTED_PROFILES, [PRODUCTION_PROFILE, LEGACY_PROFILE]);
+  assert.equal(PRODUCTION_PROFILE.N, 131072);
+  assert.equal(PRODUCTION_PROFILE.r, 8);
+  assert.equal(PRODUCTION_PROFILE.p, 1);
+  assert.equal(SCRYPT_MAX_MEMORY, 256 * 1024 * 1024);
+
+  for (const profile of SUPPORTED_PROFILES) {
+    assert.ok(
+      profileMemoryBytes(profile) <= SCRYPT_MAX_MEMORY,
+      `N=${profile.N},r=${profile.r} needs ${profileMemoryBytes(profile)} bytes`,
+    );
+  }
+  // The production profile is the expensive one, and it still fits: 128 MiB of the 256 MiB.
+  assert.equal(profileMemoryBytes(PRODUCTION_PROFILE), 128 * 1024 * 1024);
+  assert.equal(profileMemoryBytes(LEGACY_PROFILE), 16 * 1024 * 1024);
+});
+
+test('the production profile verifies, and the cheaper historical profile still verifies', async () => {
+  const production = await hashPassword('a production cost passphrase');
+  assert.equal(parsePasswordHash(production)?.profile, PRODUCTION_PROFILE);
+  assert.equal(await verifyPassword('a production cost passphrase', production), true);
+  assert.equal(needsRehash(production), false);
+
+  const legacy = await fastHash('a legacy cost passphrase');
+  assert.equal(parsePasswordHash(legacy)?.profile, LEGACY_PROFILE);
+  assert.equal(await verifyPassword('a legacy cost passphrase', legacy), true);
+  assert.equal(needsRehash(legacy), true, 'a cheaper row is flagged for upgrade, and still works');
+});
+
+test('an unsupported profile is rejected before scrypt is ever called', async () => {
+  const salt = 'a'.repeat(22);
+  const key = 'b'.repeat(86);
+  const before = invocations();
+
+  // The exact profile the review named: N=2^20, r=32, p=16 — a few gigabytes if obeyed.
+  const hostile = `scrypt$1$N=1048576,r=32,p=16$${salt}$${key}`;
+  assert.equal(parsePasswordHash(hostile), null);
+  assert.equal(await verifyPassword('anything at all here', hostile), false);
+
+  // Other profiles that are numerically plausible but not on the allowlist.
+  for (const parameters of [
+    'N=1048576,r=8,p=1', // bigger N, same r
+    'N=262144,r=8,p=1', // bigger N, one step
+    'N=131072,r=16,p=1', // production N, doubled r
+    'N=131072,r=8,p=2', // production N, doubled p
+    'N=16384,r=4,p=1', // legacy N, halved r
+    'N=4096,r=8,p=1', // below the old floor
+    'N=131072,r=8', // missing a parameter
+  ]) {
+    const candidate = `scrypt$1$${parameters}$${salt}$${key}`;
+    assert.equal(parsePasswordHash(candidate), null, `must not accept ${parameters}`);
+    assert.equal(await verifyPassword('anything at all here', candidate), false);
+  }
+
+  assert.equal(invocations(), before, 'no key derivation may run for a rejected profile');
+});
+
+test('encoded salts and keys are length-checked before they are decoded', async () => {
+  const before = invocations();
+  const good = await fastHash('a sufficiently long passphrase');
+  const [, , parameters, salt, key] = good.split('$') as [string, string, string, string, string];
+
+  const oversized = [
+    `scrypt$1$${parameters}$${'A'.repeat(5_000)}$${key}`,
+    `scrypt$1$${parameters}$${'A'.repeat(1_000_000)}$${key}`,
+    `scrypt$1$${parameters}$${salt}$${'B'.repeat(5_000)}`,
+    `scrypt$1$${parameters}$${salt}$${'B'.repeat(1_000_000)}`,
+    `scrypt$1$${parameters}$${salt}$${'B'.repeat(1_000_000)}${'C'.repeat(1_000_000)}`,
+    // Right length, wrong alphabet: refused before decoding.
+    `scrypt$1$${parameters}$${salt.slice(0, -1)}!$${key}`,
+    `scrypt$1$${parameters}$${salt}$${key.slice(0, -1)}+`,
+    // Right alphabet, wrong length.
+    `scrypt$1$${parameters}$${salt}A$${key}`,
+    `scrypt$1$${parameters}$${salt}$${key}A}`,
+    // Padding is not part of this format.
+    `scrypt$1$${parameters}$${salt}==$${key}`,
   ];
 
-  for (const candidate of cases) {
-    assert.equal(parsePasswordHash(candidate), null, `must not parse: ${candidate.slice(0, 40)}`);
-    // A damaged row fails authentication; it never throws out of the verify path.
+  for (const candidate of oversized) {
+    const started = process.hrtime.bigint();
+    assert.equal(parsePasswordHash(candidate), null);
+    assert.equal(await verifyPassword('a sufficiently long passphrase', candidate), false);
+    const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+    assert.ok(elapsedMs < 50, `rejection took ${elapsedMs.toFixed(1)} ms — it should be immediate`);
+  }
+
+  assert.equal(invocations(), before, 'no key derivation may run for a malformed encoding');
+});
+
+test('a whole stored hash is bounded in size before it is parsed', async () => {
+  const before = invocations();
+  const enormous = `scrypt$1$N=131072,r=8,p=1$${'a'.repeat(2_000_000)}$${'b'.repeat(2_000_000)}`;
+  assert.equal(parsePasswordHash(enormous), null);
+  assert.equal(await verifyPassword('irrelevant password', enormous), false);
+  assert.equal(invocations(), before);
+});
+
+test('a stored hash with unreadable content fails authentication instead of throwing', async () => {
+  for (const candidate of ['', 'not-a-hash', 'scrypt', 'scrypt$1$N=131072,r=8,p=1', 'bcrypt$1$N=131072,r=8,p=1$aa$bb']) {
+    assert.equal(parsePasswordHash(candidate), null);
     assert.equal(await verifyPassword('a sufficiently long passphrase', candidate), false);
   }
 });
 
-test('needsRehash reports whether a stored hash predates the current parameters', async () => {
+test('needsRehash reports whether a stored hash uses anything but the production profile', async () => {
   const weak = await fastHash('a sufficiently long passphrase');
-  assert.equal(needsRehash(weak), true, 'a lower-cost fixture hash should be upgraded');
-  assert.equal(needsRehash('garbage'), true, 'an unreadable hash should be replaced');
+  assert.equal(needsRehash(weak), true);
+  assert.equal(needsRehash('garbage'), true);
 
   const current = await hashPassword('a sufficiently long passphrase');
   assert.equal(needsRehash(current), false);
@@ -151,7 +246,8 @@ test('needsRehash reports whether a stored hash predates the current parameters'
 
 test('hashing is bounded: a fixed number run at once, the rest wait in a bounded queue', async () => {
   const stored = await fastHash('a sufficiently long passphrase');
-  assert.deepEqual(kdfStats().active, 0);
+  const idle = kdfStats();
+  assert.equal(idle.active, 0);
   assert.equal(MAX_CONCURRENT_HASHES, 2);
   assert.equal(MAX_QUEUED_HASHES, 64);
 
@@ -168,7 +264,12 @@ test('hashing is bounded: a fixed number run at once, the rest wait in a bounded
 
   assert.ok(results.every(Boolean), 'every queued verification should still succeed');
   assert.ok(peak <= MAX_CONCURRENT_HASHES, `concurrency peaked at ${peak}, above the ceiling`);
-  assert.deepEqual(kdfStats(), { active: 0, queued: 0, maxConcurrent: 2, maxQueued: 64 });
+  const after = kdfStats();
+  assert.equal(after.active, 0);
+  assert.equal(after.queued, 0);
+  assert.equal(after.maxConcurrent, MAX_CONCURRENT_HASHES);
+  assert.equal(after.maxQueued, MAX_QUEUED_HASHES);
+  assert.equal(after.invocations, idle.invocations + attempts.length);
 });
 
 test('a full queue is refused with 503 instead of growing without limit', async () => {
@@ -189,5 +290,35 @@ test('a full queue is refused with 503 instead of growing without limit', async 
   assert.equal(failure.reason.httpStatus, 503);
 
   // The limiter returns to a clean idle state: no leaked slots.
-  assert.deepEqual(kdfStats(), { active: 0, queued: 0, maxConcurrent: 2, maxQueued: 64 });
+  const after = kdfStats();
+  assert.equal(after.active, 0);
+  assert.equal(after.queued, 0);
+});
+
+test('the test capacity seam shrinks the limiter, rejects overflow, and always restores it', async () => {
+  const stored = await fastHash('a sufficiently long passphrase');
+  const { withHashCapacityForTests } = await import('../src/auth/password.js');
+
+  await withHashCapacityForTests(1, 1, async () => {
+    assert.deepEqual({ c: kdfStats().maxConcurrent, q: kdfStats().maxQueued }, { c: 1, q: 1 });
+
+    const first = verifyPassword('a sufficiently long passphrase', stored); // runs
+    const second = verifyPassword('a sufficiently long passphrase', stored); // queued
+    const third = verifyPassword('a sufficiently long passphrase', stored); // refused
+
+    const settled = await Promise.allSettled([first, second, third]);
+    assert.deepEqual(settled.map((entry) => entry.status), ['fulfilled', 'fulfilled', 'rejected']);
+    const failure = settled[2] as PromiseRejectedResult;
+    assert.equal((failure.reason as AppError).code, 'auth.hash_overloaded');
+  });
+
+  assert.equal(kdfStats().maxConcurrent, MAX_CONCURRENT_HASHES, 'capacity is restored');
+  assert.equal(kdfStats().maxQueued, MAX_QUEUED_HASHES);
+});
+
+test('the fixture profile is the cheaper one, and the production profile is not used by fixtures', async () => {
+  assert.equal(TEST_SCRYPT.N, LEGACY_PROFILE.N);
+  const fixture = await fastHash('a fixture passphrase');
+  assert.match(fixture, /^scrypt\$1\$N=16384,r=8,p=1\$/);
+  assert.notEqual(parsePasswordHash(fixture)?.profile, PRODUCTION_PROFILE);
 });

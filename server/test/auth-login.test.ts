@@ -16,7 +16,7 @@ import { createHash } from 'node:crypto';
 import test from 'node:test';
 
 import { LoginRateLimiter } from '../src/auth/rateLimit.js';
-import { hashPassword } from '../src/auth/password.js';
+import { hashPassword, kdfStats } from '../src/auth/password.js';
 import { SESSION_TTL_MS } from '../src/auth/sessions.js';
 import {
   errorCode,
@@ -403,4 +403,86 @@ test('the throttle keeps a bounded number of keys, however many usernames are tr
   clock += 10 * 60_000;
   limiter.prune();
   assert.deepEqual(limiter.stats(), { usernames: 0, addresses: 0 });
+});
+
+// ── LAN-2.1: the password ceiling applies to sign-in ─────────────────────────
+
+test('exactly 128 code points is accepted, and 129 never reaches the key derivation', async () => {
+  await withServer(async ({ baseUrl, db }) => {
+    const ascii128 = 'a'.repeat(128);
+    const emoji128 = '🔐'.repeat(128); // 128 code points, 256 UTF-16 units
+    await seedAccount(db, { username: 'at-limit', role: 'member', password: ascii128 });
+    await seedAccount(db, { username: 'at-limit-emoji', role: 'member', password: emoji128 });
+
+    const ascii = await login(baseUrl, 'at-limit', ascii128);
+    assert.equal(ascii.status, 200, 'exactly 128 code points is a legal password');
+    const emoji = await login(baseUrl, 'at-limit-emoji', emoji128);
+    assert.equal(emoji.status, 200);
+
+    // One past the ceiling: refused, generically, and without spending a KDF slot.
+    const before = kdfStats().invocations;
+    const tooLong = await login(baseUrl, 'at-limit', `${ascii128}b`);
+    assert.equal(tooLong.status, 401);
+    assert.equal(errorCode(tooLong.body), 'auth.invalid_credentials');
+    assert.equal(kdfStats().invocations, before, 'no scrypt may run for an oversized password');
+  });
+});
+
+test('an oversized password is answered identically for a real and an unknown username', async () => {
+  await withServer(async ({ baseUrl, db }) => {
+    await seedAccount(db, { username: 'amara', role: 'member' });
+    const oversized = 'x'.repeat(129);
+
+    const before = kdfStats().invocations;
+    const existing = await login(baseUrl, 'amara', oversized);
+    const unknown = await login(baseUrl, 'nobody-at-all', oversized);
+    const after = kdfStats().invocations;
+
+    assert.equal(existing.status, 401);
+    assert.equal(unknown.status, 401);
+    assert.equal(errorCode(existing.body), 'auth.invalid_credentials');
+    assert.equal(errorCode(unknown.body), 'auth.invalid_credentials');
+    assert.equal(errorMessage(existing.body), errorMessage(unknown.body));
+    assert.deepEqual(
+      Object.keys(existing.body.error ?? {}).sort(),
+      Object.keys(unknown.body.error ?? {}).sort(),
+      'the two responses are structurally identical',
+    );
+    assert.equal(after, before, 'neither path may hash an oversized password');
+
+    // The same holds far above the limit; the body parser is the only earlier gate.
+    assert.equal((await login(baseUrl, 'amara', 'y'.repeat(4_000))).status, 401);
+    assert.equal((await login(baseUrl, 'nobody-at-all', 'y'.repeat(4_000))).status, 401);
+  });
+});
+
+test('oversized password attempts are still throttled like any other failure', async () => {
+  const limiter = new LoginRateLimiter({
+    maxAttempts: 3,
+    windowMs: 60_000,
+    cooldownMs: 60_000,
+    maxEntries: 100,
+    now: () => Date.parse('2026-06-01T12:00:00.000Z'),
+  });
+
+  await withServer(
+    async ({ baseUrl, db }) => {
+      await seedAccount(db, { username: 'amara', role: 'member' });
+      const oversized = 'z'.repeat(200);
+
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const response = await postJson(baseUrl, '/api/auth/login', { username: 'amara', password: oversized });
+        assert.equal(response.status, 401, `attempt ${attempt + 1} is a plain 401`);
+      }
+
+      const blocked = await postJson<{ error?: { code: string } }>(baseUrl, '/api/auth/login', {
+        username: 'amara',
+        password: oversized,
+      });
+      assert.equal(blocked.status, 429, 'an oversized attempt counts against the account allowance');
+      assert.equal(errorCode(blocked.body), 'auth.too_many_attempts');
+      assert.ok(Number(blocked.headers.get('retry-after')) > 0);
+    },
+    { rateLimiter: limiter },
+  );
 });

@@ -111,6 +111,29 @@ export function authenticateSession(db: Db, token: string, now: string = new Dat
   };
 }
 
+/**
+ * Is this session still the live session of this account?
+ *
+ * Used for the transactional re-checks in LAN-2.1: a request that decided to act before
+ * an `await` must prove, after the `await`, that the session it was authenticated with is
+ * still unrevoked and unexpired — otherwise a sign-out, a password change, or a disable
+ * that happened in between would be silently ignored.
+ */
+export function isSessionLive(
+  db: Db,
+  sessionId: number,
+  accountId: number,
+  now: string = new Date().toISOString(),
+): boolean {
+  const row = db
+    .prepare('select user_account_id, expires_at, revoked_at from user_sessions where id = ?')
+    .get(sessionId) as { user_account_id: number; expires_at: string; revoked_at: string | null } | undefined;
+  if (!row) return false;
+  if (row.user_account_id !== accountId) return false;
+  if (row.revoked_at !== null) return false;
+  return row.expires_at > now;
+}
+
 export function revokeSession(db: Db, sessionId: number, reason: RevocationReason, now: string = new Date().toISOString()): boolean {
   const info = db
     .prepare('update user_sessions set revoked_at = ?, revoked_reason = ? where id = ? and revoked_at is null')

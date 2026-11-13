@@ -8,7 +8,21 @@
  *   · accounts are never deleted — only disabled;
  *   · the last active administrator can never be disabled or demoted;
  *   · an administrator cannot disable or demote themselves;
- *   · disabling, role changes, password resets and password changes revoke sessions.
+ *   · disabling, role changes, password resets and password changes revoke sessions;
+ *   · every security state change writes its audit row inside the same transaction, and
+ *     rolls back if that row cannot be written.
+ *
+ * ── revalidation after an await (LAN-2.1 correction) ────────────────────────
+ *
+ * Creating an account or resetting a password requires a key derivation, which is
+ * asynchronous and slow on purpose. The role check in the HTTP middleware happened
+ * before that `await`; by the time the transaction opens, the acting administrator may
+ * have been demoted, disabled, forced to change their password, or signed out.
+ *
+ * Every mutating operation that follows an `await` therefore re-asks the questions inside
+ * the write transaction, via `assertActorAuthorised`: is this account still active, still
+ * an administrator, still not owing a password change, and is the session it is holding
+ * still unrevoked and unexpired? A stale decision is refused, not committed.
  *
  * The transactional checks use `BEGIN IMMEDIATE`, so two administrators acting at the
  * same moment cannot both observe "there is another administrator" and then both step
@@ -20,17 +34,21 @@ import { randomBytes } from 'node:crypto';
 import type { Db } from '../db/index.js';
 import { AppError } from '../errors.js';
 
-import { recordAudit } from './audit.js';
+import { recordRequiredAudit } from './audit.js';
 import {
   accountNotFound,
   cannotModifySelf,
+  forbidden,
   invalidRole,
   invalidStatus,
   lastAdministrator,
+  passwordChangeRequired,
+  passwordChangedConcurrently,
+  unauthenticated,
   usernameTaken,
 } from './errors.js';
 import { normalizeUsername } from './policy.js';
-import { revokeAllSessions } from './sessions.js';
+import { isSessionLive, revokeAllSessions } from './sessions.js';
 
 export type Role = 'administrator' | 'member';
 export type AccountStatus = 'active' | 'disabled';
@@ -50,6 +68,48 @@ export interface AccountRow {
   disabled_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+/**
+ * The acting identity of a request: account, session, and the public id used in audit
+ * rows. Passed into the repository so the check happens where the write happens.
+ */
+export interface ActorHandle {
+  readonly accountId: number;
+  readonly sessionId: number;
+  readonly publicId: string;
+}
+
+export interface ActorRequirements {
+  /** Role the actor must currently hold, when the operation is administrative. */
+  readonly role?: Role;
+  /** Refuse an account that still owes a password change. */
+  readonly requirePasswordChanged?: boolean;
+}
+
+/**
+ * Re-validate an actor inside the caller's transaction.
+ *
+ * Returns the fresh account row. Throws — which aborts and rolls back the surrounding
+ * transaction — when the actor is no longer allowed to do what it started.
+ *
+ * Order matters for the response the client sees: a disabled account is "we do not know
+ * who you are" (401), a demoted one is "not for this" (403), and a dead session is 401.
+ */
+export function assertActorAuthorised(
+  db: Db,
+  actor: ActorHandle,
+  now: string,
+  requirements: ActorRequirements = {},
+): AccountRow {
+  const account = findById(db, actor.accountId);
+  if (!account || account.status !== 'active') throw unauthenticated();
+  if (requirements.role !== undefined && account.role !== requirements.role) throw forbidden();
+  if (requirements.requirePasswordChanged === true && account.must_change_password === 1) {
+    throw passwordChangeRequired();
+  }
+  if (!isSessionLive(db, actor.sessionId, account.id, now)) throw unauthenticated();
+  return account;
 }
 
 /** What the API is allowed to expose about an account. Never includes the hash. */
@@ -134,7 +194,13 @@ export interface CreateAccountInput {
   readonly role: Role;
   readonly personnelId?: number | null;
   readonly mustChangePassword: boolean;
+  /** Audit attribution: an account public id, or a label such as `operator-cli`. */
   readonly actor: string | null;
+  /**
+   * When the request is served over HTTP, the acting administrator. Revalidated inside
+   * the transaction, because the password hash was computed after the middleware ran.
+   */
+  readonly authorisingActor?: ActorHandle;
   readonly now?: string;
 }
 
@@ -142,11 +208,18 @@ export function createAccount(db: Db, input: CreateAccountInput): AccountRow {
   if (input.role !== 'administrator' && input.role !== 'member') throw invalidRole();
 
   const run = db.transaction((): AccountRow => {
+    const now = input.now ?? new Date().toISOString();
+
+    // The role snapshot from the middleware is stale by now: the hash was awaited. Ask
+    // the database instead, inside this transaction.
+    if (input.authorisingActor) {
+      assertActorAuthorised(db, input.authorisingActor, now, { role: 'administrator', requirePasswordChanged: true });
+    }
+
     const normalized = normalizeUsername(input.username);
     const clash = db.prepare('select id from user_accounts where username_normalized = ?').get(normalized);
     if (clash) throw usernameTaken();
 
-    const now = input.now ?? new Date().toISOString();
     const info = db
       .prepare(
         `insert into user_accounts
@@ -169,7 +242,7 @@ export function createAccount(db: Db, input: CreateAccountInput): AccountRow {
     const created = findById(db, Number(info.lastInsertRowid));
     if (!created) throw new Error('account insert did not produce a row');
 
-    recordAudit(db, {
+    recordRequiredAudit(db, {
       action: 'account.create',
       entity: 'user_account',
       entityKey: created.public_id,
@@ -194,6 +267,8 @@ export interface PatchAccountInput {
   readonly actorPublicId: string | null;
   readonly role?: Role;
   readonly status?: AccountStatus;
+  /** Revalidated in the transaction when present (HTTP path). */
+  readonly authorisingActor?: ActorHandle;
   readonly now?: string;
 }
 
@@ -207,6 +282,11 @@ export function patchAccount(db: Db, input: PatchAccountInput): PatchAccountResu
   if (input.status !== undefined && input.status !== 'active' && input.status !== 'disabled') throw invalidStatus();
 
   const run = db.transaction((): PatchAccountResult => {
+    const now = input.now ?? new Date().toISOString();
+    if (input.authorisingActor) {
+      assertActorAuthorised(db, input.authorisingActor, now, { role: 'administrator', requirePasswordChanged: true });
+    }
+
     const current = findByPublicId(db, input.publicId);
     if (!current) throw accountNotFound();
 
@@ -237,7 +317,6 @@ export function patchAccount(db: Db, input: PatchAccountInput): PatchAccountResu
       if (others.n === 0) throw lastAdministrator();
     }
 
-    const now = input.now ?? new Date().toISOString();
     db.prepare(
       `update user_accounts
           set role = ?, status = ?, disabled_at = ?, updated_at = ?, row_version = row_version + 1
@@ -247,7 +326,7 @@ export function patchAccount(db: Db, input: PatchAccountInput): PatchAccountResu
     let sessionsRevoked = 0;
     if (nextStatus === 'disabled' && current.status !== 'disabled') {
       sessionsRevoked = revokeAllSessions(db, current.id, 'account_disabled', now);
-      recordAudit(db, {
+      recordRequiredAudit(db, {
         action: 'account.disable',
         entity: 'user_account',
         entityKey: current.public_id,
@@ -255,7 +334,7 @@ export function patchAccount(db: Db, input: PatchAccountInput): PatchAccountResu
         detail: { sessionsRevoked },
       });
     } else if (nextStatus === 'active' && current.status === 'disabled') {
-      recordAudit(db, {
+      recordRequiredAudit(db, {
         action: 'account.enable',
         entity: 'user_account',
         entityKey: current.public_id,
@@ -266,7 +345,7 @@ export function patchAccount(db: Db, input: PatchAccountInput): PatchAccountResu
     if (nextRole !== current.role) {
       // A role change applies immediately: existing sessions lose whatever they had.
       sessionsRevoked += revokeAllSessions(db, current.id, 'role_change', now);
-      recordAudit(db, {
+      recordRequiredAudit(db, {
         action: 'account.role_change',
         entity: 'user_account',
         entityKey: current.public_id,
@@ -285,27 +364,48 @@ export function patchAccount(db: Db, input: PatchAccountInput): PatchAccountResu
 
 export interface ChangeOwnPasswordInput {
   readonly accountId: number;
-  readonly passwordHash: string;
+  /** The session this request was authenticated with. Rechecked inside the transaction. */
+  readonly sessionId: number;
+  /** The `password_hash` that was verified at the start of the request. */
+  readonly expectedPasswordHash: string;
+  readonly newPasswordHash: string;
   readonly actorPublicId: string | null;
   readonly now?: string;
 }
 
-/** Set a new password, clear the must-change flag and revoke every session. */
+/**
+ * Set a new password, clear the must-change flag and revoke every session.
+ *
+ * The caller verified the *current* password before awaiting the new hash. Between those
+ * two moments an administrator may have reset the password, or another device may have
+ * changed it. The stored hash is therefore compared with the one that was verified: if it
+ * moved, this request is refused with a conflict rather than overwriting someone else's
+ * change. The session must also still be live, so a sign-out or a disable during the
+ * derivation cannot be ignored either.
+ */
 export function changeOwnPassword(db: Db, input: ChangeOwnPasswordInput): number {
   const run = db.transaction((): number => {
     const account = findById(db, input.accountId);
     if (!account) throw accountNotFound();
     const now = input.now ?? new Date().toISOString();
 
+    if (account.status !== 'active') throw unauthenticated();
+
+    // Conflict first: an administrator reset changes the hash *and* revokes the session,
+    // and "someone else changed your password" is the more useful of the two answers.
+    if (account.password_hash !== input.expectedPasswordHash) throw passwordChangedConcurrently();
+
+    if (!isSessionLive(db, input.sessionId, account.id, now)) throw unauthenticated();
+
     db.prepare(
       `update user_accounts
           set password_hash = ?, must_change_password = 0, password_changed_at = ?, updated_at = ?,
               row_version = row_version + 1
         where id = ?`,
-    ).run(input.passwordHash, now, now, account.id);
+    ).run(input.newPasswordHash, now, now, account.id);
 
     const revoked = revokeAllSessions(db, account.id, 'password_change', now);
-    recordAudit(db, {
+    recordRequiredAudit(db, {
       action: 'account.password_change',
       entity: 'user_account',
       entityKey: account.public_id,
@@ -321,23 +421,33 @@ export function changeOwnPassword(db: Db, input: ChangeOwnPasswordInput): number
 export interface ResetPasswordInput {
   readonly publicId: string;
   readonly passwordHash: string;
-  readonly actorAccountId: number;
-  readonly actorPublicId: string | null;
+  /** The administrator making the request; revalidated inside the transaction. */
+  readonly authorisingActor: ActorHandle;
   readonly now?: string;
 }
 
-/** Administrator-initiated reset. Refuses to touch the caller's own account. */
+/**
+ * Administrator-initiated reset. Refuses to touch the caller's own account, and refuses
+ * to act for a caller who is no longer an active, password-current administrator with a
+ * live session at the moment the transaction opens.
+ */
 export function resetPasswordByAdministrator(db: Db, input: ResetPasswordInput): AccountRow {
   const run = db.transaction((): AccountRow => {
+    const now = input.now ?? new Date().toISOString();
+
+    assertActorAuthorised(db, input.authorisingActor, now, {
+      role: 'administrator',
+      requirePasswordChanged: true,
+    });
+
     const account = findByPublicId(db, input.publicId);
     if (!account) throw accountNotFound();
-    if (account.id === input.actorAccountId) {
+    if (account.id === input.authorisingActor.accountId) {
       throw cannotModifySelf(
         'Use the change-password endpoint for your own account, or the local recovery command if you are locked out.',
       );
     }
 
-    const now = input.now ?? new Date().toISOString();
     db.prepare(
       `update user_accounts
           set password_hash = ?, must_change_password = 1, password_changed_at = ?, updated_at = ?,
@@ -346,11 +456,11 @@ export function resetPasswordByAdministrator(db: Db, input: ResetPasswordInput):
     ).run(input.passwordHash, now, now, account.id);
 
     const revoked = revokeAllSessions(db, account.id, 'password_reset', now);
-    recordAudit(db, {
+    recordRequiredAudit(db, {
       action: 'account.password_reset',
       entity: 'user_account',
       entityKey: account.public_id,
-      actor: input.actorPublicId,
+      actor: input.authorisingActor.publicId,
       detail: { sessionsRevoked: revoked },
     });
 
@@ -400,7 +510,7 @@ export function bootstrapAdministrator(db: Db, input: BootstrapInput): AccountRo
     const created = findById(db, Number(info.lastInsertRowid));
     if (!created) throw new Error('bootstrap did not produce a row');
 
-    recordAudit(db, {
+    recordRequiredAudit(db, {
       action: 'account.bootstrap',
       entity: 'user_account',
       entityKey: created.public_id,
@@ -443,7 +553,7 @@ export function recoverAdministratorPassword(db: Db, input: RecoveryInput): Acco
     ).run(input.passwordHash, now, now, account.id);
 
     const revoked = revokeAllSessions(db, account.id, 'admin_recovery', now);
-    recordAudit(db, {
+    recordRequiredAudit(db, {
       action: 'account.admin_recovery',
       entity: 'user_account',
       entityKey: account.public_id,

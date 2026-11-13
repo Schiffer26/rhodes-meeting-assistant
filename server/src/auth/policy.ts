@@ -38,6 +38,17 @@ export function passwordLength(password: string): number {
   return [...password].length;
 }
 
+/**
+ * True when a secret is longer than any password this system can hold.
+ *
+ * Used as a pre-flight guard on the sign-in and change-password paths: a value this long
+ * cannot match a stored password (they are all capped at `PASSWORD_MAX_LENGTH`), so it
+ * must be refused *before* it is handed to the key-derivation function.
+ */
+export function passwordExceedsLimit(password: string): boolean {
+  return passwordLength(password) > PASSWORD_MAX_LENGTH;
+}
+
 export function validateUsername(raw: unknown): string {
   if (typeof raw !== 'string') {
     throw new AppError('auth.invalid_username', 'A username is required.', {

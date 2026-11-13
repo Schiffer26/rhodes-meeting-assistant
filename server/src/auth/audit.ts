@@ -45,30 +45,57 @@ function redact(value: unknown): unknown {
 }
 
 /**
- * Append one audit record.
+ * Perform the insert itself. This is the only place an audit row is written, and it
+ * deliberately does not catch anything: whether a failure is tolerated is the caller's
+ * decision, and that decision is the whole point of having two functions below.
+ */
+function insertAuditRow(db: Db, entry: AuditEntry): void {
+  db.prepare(
+    `insert into audit_records (occurred_at, actor, action, entity, entity_key, outcome, detail)
+     values (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    new Date().toISOString(),
+    entry.actor ?? null,
+    entry.action,
+    entry.entity,
+    entry.entityKey ?? null,
+    entry.outcome ?? 'ok',
+    entry.detail ? JSON.stringify(redact(entry.detail)) : null,
+  );
+}
+
+/**
+ * Best-effort audit write, for events that stand on their own.
  *
- * Never throws: an audit failure must not turn a successful security operation into an
- * error the caller sees, but it is logged loudly because a silent gap in the trail is a
- * problem in its own right.
+ * A sign-in, a failed sign-in, a sign-out: each is a fact about a request, not a claim
+ * that some other row changed. If the insert fails, the request has still done what it
+ * said it did, so the failure is logged loudly and the response stands.
+ *
+ * Never use this for a security *state change*. Use `recordRequiredAudit`.
  */
 export function recordAudit(db: Db, entry: AuditEntry): void {
   try {
-    db.prepare(
-      `insert into audit_records (occurred_at, actor, action, entity, entity_key, outcome, detail)
-       values (?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      new Date().toISOString(),
-      entry.actor ?? null,
-      entry.action,
-      entry.entity,
-      entry.entityKey ?? null,
-      entry.outcome ?? 'ok',
-      entry.detail ? JSON.stringify(redact(entry.detail)) : null,
-    );
+    insertAuditRow(db, entry);
   } catch (error) {
     logger.error('audit.write_failed', {
       action: entry.action,
       reason: error instanceof Error ? error.message : String(error),
     });
   }
+}
+
+/**
+ * Required audit write, for successful security state changes (LAN-2.1 correction).
+ *
+ * An account that was created, disabled, re-enabled, re-roled, or given a new password
+ * must have a matching audit row. If the row cannot be written, the change did not
+ * happen: this throws, and because it runs inside the same transaction as the mutation,
+ * the throw rolls the whole transaction back. A security change without a trail is not
+ * an acceptable outcome, and "we changed it but could not record who did" is exactly the
+ * situation an audit trail exists to prevent.
+ *
+ * Call this only from inside the transaction that performs the change.
+ */
+export function recordRequiredAudit(db: Db, entry: AuditEntry): void {
+  insertAuditRow(db, entry);
 }

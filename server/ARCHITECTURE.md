@@ -67,10 +67,13 @@ server/
     ├── migrations.test.ts
     ├── auth-migrations.test.ts  ← 0003, the v2 → v3 upgrade, schema rules
     ├── auth-password.test.ts    ← hashing, format, policy, KDF limiter
-    ├── auth-login.test.ts       ← sign-in, sessions, expiry, logout, throttling
+    ├── auth-login.test.ts       ← sign-in, sessions, expiry, logout, throttling, password ceiling
     ├── authz.test.ts            ← 401/403, roles, self-protection, admin surface
     ├── auth-provisioning.test.ts← bootstrap/recovery, CLI refusals
-    └── auth-secrets.test.ts     ← no secret in logs, database, audit or responses
+    ├── auth-secrets.test.ts     ← no secret in logs, database, audit or responses
+    ├── auth-stale-authz.test.ts ← LAN-2.1: revalidation after an asynchronous hash
+    ├── auth-audit.test.ts       ← LAN-2.1: required audit writes roll the change back
+    └── auth-overload.test.ts    ← LAN-2.1: KDF saturation and dummy-hash recovery
 ```
 
 Nothing under `server/` is imported by the frontend, and the frontend build does not
@@ -395,7 +398,7 @@ third role, no per-record permission table, and no permission cache.
 | N / r / p | 131072 / 8 / 1 | OWASP-recommended; ~128 MiB and ~0.3 s per hash on the target hardware |
 | Salt | 16 random bytes per hash | Two users with the same password do not share a hash |
 | Key length | 64 bytes | Derived key length for the stored value |
-| `maxmem` | 256 MiB | Node refuses an allocation above this; the ceiling is twice the need |
+| `maxmem` | 256 MiB, a constant | Fixed budget; never derived from a stored row (LAN-2.1) |
 | Concurrency | 2 at once, 64 queued, then `503` | 2 hashes ≈ 256 MiB — what an office host can spare. An unbounded queue would be a memory-exhaustion vector |
 | Format | `scrypt$1$N=131072,r=8,p=1$<salt>$<key>` (base64url) | Self-describing and versioned, so parameters can change without invalidating existing rows |
 | Comparison | `timingSafeEqual` | Constant-time equality on the derived key |
@@ -405,10 +408,24 @@ for four consecutive hashes — **348 ms median**, the first run cold — at rou
 resident per hash. That cost is the defence: an attacker with a copy of the database
 faces it for every guess.
 
-The parameters recorded in a row are **validated before use** (N a power of two between
-2^12 and 2^20, r 1–32, p 1–16, salt 8–64 bytes, key 32–128 bytes). A corrupted or hostile
-row cannot make the server allocate a gigabyte, and an unreadable hash fails
-authentication instead of throwing.
+**The resource budget (LAN-2.1).** A stored hash names its own parameters, so a database
+row is untrusted input to the hashing code. LAN-2 validated those parameters against a
+broad *range* and then sized `maxmem` **from the row** (`max(256 MiB, 128·N·r·2)`), which
+let a hostile row decide how much memory the process would commit. That is now replaced by
+an explicit allowlist plus one constant:
+
+- only these profiles are accepted — `N=131072,r=8,p=1,keylen=64` (production) and
+  `N=16384,r=8,p=1,keylen=64` (the cheaper profile our test fixtures use, and any row
+  written under an older cost). Anything else is refused **before** scrypt is called;
+- `maxmem` is always `SCRYPT_MAX_MEMORY` (256 MiB), and every allowlisted profile is
+  checked against it at module load — the process cannot be talked into a bigger commit;
+- the encoded salt and key must be exactly the length their profile specifies, in the
+  base64url alphabet, checked **before** decoding — a megabyte-long "salt" costs a length
+  comparison, not an allocation;
+- the whole stored string is bounded (≤ 1 024 characters) before it is split.
+
+Hashing always uses the production profile; `needsRehash()` reports a row that does not.
+A rejected profile or a malformed encoding is "cannot verify", never an exception.
 
 **Policy.** 15–128 characters, counted in Unicode code points. No composition rules, no
 trimming, no Unicode normalisation, no truncation: the exact string the user typed is the
@@ -463,6 +480,16 @@ Rules that hold across the surface:
   answer `401 auth.invalid_credentials` with the same message. An unknown username still
   pays for one scrypt verification against a throwaway hash, so timing does not
   distinguish it either.
+- A password longer than 128 code points is refused **before any key derivation** on the
+  sign-in path (LAN-2.1). No stored password can be that long, so hashing it would only
+  burn a KDF slot. The refusal is the same generic `401` whether or not the username
+  exists, and the attempt counts against the login throttle. The change-password route
+  applies the same ceiling to the password it is asked to verify.
+- When the KDF pool is full, **both** the known and the unknown username paths answer
+  `503 auth.hash_overloaded`. The dummy-verification path propagates the error instead of
+  swallowing it, and a failed dummy-hash initialisation is forgotten rather than cached, so
+  a transient overload cannot permanently disable it — and cannot become an enumeration
+  signal.
 - `401` means "we do not know who you are"; `403` means "we do, and not for this".
 - An account with `must_change_password = 1` can sign in, read `/api/auth/me` and change
   its password — and is refused everything else with `403 auth.password_change_required`.
@@ -486,6 +513,23 @@ handlers, so any future caller inherits them:
 - the **last active administrator** can never be disabled or demoted. The count is taken
   inside the write transaction, so two simultaneous demotions cannot both succeed;
 - every action above is audited, with the affected `public_id` and no credential material.
+
+**Revalidation after an asynchronous step (LAN-2.1).** Creating an account and resetting a
+password both await a key derivation — deliberately hundreds of milliseconds — before they
+write. The middleware's role check happened *before* that await, so by the time the
+transaction opens the caller may have been demoted, disabled, forced to change their
+password, or signed out. The route therefore passes an `ActorHandle` (account id, session
+id, public id) into the repository, and `assertActorAuthorised` re-asks every question
+inside the `BEGIN IMMEDIATE` transaction: still active, still `administrator`, no outstanding
+password change, and the session is still unrevoked and unexpired. A stale decision is
+refused with `403` (no longer an administrator / owes a password change) or `401` (account
+disabled, session gone) instead of being committed.
+
+The same pattern protects self-service password change: the route verifies the current
+password, then awaits the new hash, then the transaction confirms that the stored
+`password_hash` is still the one that was verified and that the session is still live. If
+an administrator reset the password in that window, the change is refused with
+`409 auth.password_changed_concurrently` rather than overwriting the reset.
 
 ### 7.6 · Throttling
 
@@ -517,6 +561,18 @@ revocations are recorded on the account action that caused them, with a count).
 Never recorded: passwords, hashes, tokens, `Authorization` headers. The writer additionally
 redacts any detail key matching `pass|secret|token|hash|authoriz| cookie`, so a future call
 site cannot start leaking one by accident.
+
+**Two kinds of write (LAN-2.1).**
+
+| Kind | Function | Behaviour on failure | Used for |
+| --- | --- | --- | --- |
+| Required | `recordRequiredAudit` | throws → the surrounding transaction rolls back | bootstrap, account creation, disable, reactivation, role change, password change, administrator reset, local recovery |
+| Best-effort | `recordAudit` | logged, the request continues | sign-in, failed sign-in, sign-out |
+
+A security state change is not committed without its trail: if the audit insert fails, the
+account mutation, the session revocation and the audit row all roll back together. Events
+that merely describe a request are recorded if possible; a broken audit table must not lock
+everyone out of the application.
 
 ### 7.8 · Provisioning and recovery
 
@@ -550,6 +606,23 @@ npm run server:admin:reset       # new password for an administrator (recovery)
 | One process, one host | Throttle state and session state are in that process (sessions in SQLite, counters in memory) |
 | No client is attached yet | The token has no storage decision to make yet. When a client is added it must hold the token **in memory only** — never `localStorage`, which any script in the page can read |
 | Code does not log request bodies | The request log has method, path, status and duration; never a header or a body |
+
+### 7.10 · Corrections in LAN-2.1
+
+Five findings from the independent review of LAN-2, and what changed.
+
+| # | Finding | Correction | Proven by |
+| --- | --- | --- | --- |
+| 1 | Stored parameters were range-checked, and `maxmem` was **derived from the row**, letting a hostile row choose the memory commitment | Allowlist of two profiles, one fixed 256 MiB budget, module-load budget assertion, pre-decode salt/key length and alphabet checks | `auth-password.test.ts` (allowlist, `N=2^20,r=32,p=16` refused with zero derivations, 1 MB encodings refused) |
+| 2 | The sign-in path did not apply the 128-code-point ceiling before verification, so an oversized password was hashed | Ceiling checked after throttling and before the account lookup; generic 401 for known and unknown usernames; throttle counts it; change-password applies the same ceiling to the value it verifies | `auth-login.test.ts` (128 accepted, 129 refused, identical responses, zero derivations) |
+| 3 | Role checks happened before an `await`, so a demoted/disabled caller could still complete an account creation or reset | Repository takes an `ActorHandle` and revalidates inside the write transaction (status, role, must-change flag, live session); self-service change also re-checks the stored hash and session | `auth-stale-authz.test.ts` (5 scenarios with an injected hasher, no sleeps) |
+| 4 | `recordAudit` swallowed failures, so a security change could commit without a trail | Split into `recordRequiredAudit` (throws, same transaction) and `recordAudit` (best effort); applied to bootstrap, create, disable, enable, role change, password change, reset, recovery | `auth-audit.test.ts` (audit trigger that aborts; every mutation rolls back, logins still work) |
+| 5 | `verifyAgainstDummyHash` swallowed overload, giving unknown usernames 401 while known ones got 503 | Overload propagates on both paths; a rejected dummy-hash promise is cleared so it is retried | `auth-overload.test.ts` (deterministic saturation via a capacity seam, HTTP 503 parity, retry after failure) |
+
+Two test seams exist for these, both documented as such in `password.ts`:
+`withHashCapacityForTests` (shrink the limiter instead of launching dozens of real
+derivations) and `resetDummyHashForTests` (observe lazy initialisation from a known state).
+Neither is reachable from an HTTP route.
 
 ## 8 · Initialisation
 
@@ -717,4 +790,9 @@ office, verify on the actual Windows host:
 15. **scrypt cost on the real host.** The parameters were measured on a 2-vCPU Linux
     container at ~350 ms per hash. On a slower office machine the same parameters cost
     more; confirm sign-in latency is acceptable and that two simultaneous sign-ins do not
-    exhaust memory (the limiter caps them at two).
+    exhaust memory (the limiter caps them at two, and every derivation is bounded by the
+    fixed 256 MiB budget).
+16. **Transactional revalidation on Windows SQLite (LAN-2.1).** `BEGIN IMMEDIATE` and the
+    rollback of a failed audit insert were exercised on Linux only. Confirm on the host
+    that an account creation with a deliberately broken `audit_records` trigger leaves no
+    account behind, and that a demotion during an in-flight creation is refused.

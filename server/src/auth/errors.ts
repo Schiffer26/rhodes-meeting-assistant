@@ -54,6 +54,21 @@ export function currentPasswordIncorrect(): AppError {
   });
 }
 
+/**
+ * The password changed underneath an in-flight change-password request.
+ *
+ * Reached when an administrator reset (or another device's change) committed while this
+ * request was awaiting its key derivation. The response is a conflict, not a silent
+ * overwrite: the caller must sign in again with whatever password is now current.
+ */
+export function passwordChangedConcurrently(): AppError {
+  return new AppError(
+    'auth.password_changed_concurrently',
+    'Your password was changed while this request was in progress. Sign in again with the current password.',
+    { httpStatus: 409, exposure: 'safe' },
+  );
+}
+
 export function accountNotFound(): AppError {
   return new AppError('admin.account_not_found', 'No such account.', {
     httpStatus: 404,

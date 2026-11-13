@@ -28,6 +28,11 @@ export interface AppDependencies {
   readonly now?: () => Date;
   /** Injectable throttling state, so tests can run with a deterministic clock. */
   readonly rateLimiter?: LoginRateLimiter;
+  /**
+   * Injectable key derivation for new passwords. Tests use it to perform a concurrent
+   * security operation at the exact moment a route is awaiting a hash.
+   */
+  readonly passwordHasher?: (password: string) => Promise<string>;
 }
 
 export function createApp(deps: AppDependencies): Express {
@@ -53,8 +58,8 @@ export function createApp(deps: AppDependencies): Express {
   const now = deps.now ?? (() => new Date());
   const limiter = deps.rateLimiter ?? new LoginRateLimiter();
 
-  app.use('/api/auth', createAuthRouter({ db: deps.db, now, limiter }));
-  app.use('/api/admin', createAdminRouter({ db: deps.db, now }));
+  app.use('/api/auth', createAuthRouter({ db: deps.db, now, limiter, passwordHasher: deps.passwordHasher }));
+  app.use('/api/admin', createAdminRouter({ db: deps.db, now, passwordHasher: deps.passwordHasher }));
 
   // Business endpoints (meetings, personnel, notes) do not exist yet. Everything else is
   // a 404, including any unauthenticated data path.
