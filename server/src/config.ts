@@ -258,14 +258,24 @@ export function isNetworkSharePath(target: string): boolean {
  * compared as a bare POSIX string — the containment check silently missed and a
  * synchronised directory was accepted.
  *
- * The key is: separators unified to the platform's, resolved by the same rules the rest
- * of this file uses, long-path prefix removed, trailing separators dropped, lower-cased
- * for a case-insensitive comparison. No drive letter is assumed or invented — whatever
- * the platform's resolution produces is what is compared, on both sides alike.
+ * The key is: long-path prefix removed, separators unified to the platform's, resolved by
+ * the same rules the rest of this file uses, trailing separators dropped, lower-cased for
+ * a case-insensitive comparison. No drive letter is assumed or invented — whatever the
+ * platform's resolution produces is what is compared, on both sides alike.
+ *
+ * The order matters (LAN-2.1a follow-up). `\\?\` is a literal prefix recognised by its
+ * *double* separator, so stripping it after separator normalisation would flatten
+ * `\\?\C:\Users\Owner\OneDrive` to `\?\C:\Users\...` and let it be resolved as a
+ * path on the current drive — a key that matches nothing. A share keeps both leading
+ * separators for the same reason: one separator would describe a directory on the current
+ * drive rather than `\\server\share`.
  */
 function comparisonKey(value: string): string {
-  const unified = value.trim().replace(/[\\/]+/g, path.sep);
-  const resolved = stripWindowsLongPathPrefix(path.resolve(unified)).replace(/[\\/]+$/, '');
+  const withoutPrefix = stripWindowsLongPathPrefix(value.trim());
+  const isUnc = isNetworkSharePath(withoutPrefix);
+  const unified = withoutPrefix.replace(/[\\/]+/g, path.sep);
+  const candidate = isUnc ? path.sep + unified : unified;
+  const resolved = stripWindowsLongPathPrefix(path.resolve(candidate)).replace(/[\\/]+$/, '');
   return (resolved === '' ? path.sep : resolved).toLowerCase();
 }
 

@@ -176,6 +176,66 @@ test('sync-root containment is boundary-aware, not a text-prefix match', () => {
   assert.equal(isSyncedFolderPath('/home/office/RHODES', {}), false, 'no root, no name: accepted');
 });
 
+test('extended-length Windows paths compare equal to their ordinary form', () => {
+  // `\\?\` is a literal prefix recognised by its double separator, so it has to be
+  // stripped before separators are normalised — otherwise `\\?\C:\...` becomes a path on
+  // the current drive and matches nothing.
+  const extendedRoot = '\\\\?\\C:\\Users\\Owner\\OneDrive';
+  const ordinaryRoot = 'C:\\Users\\Owner\\OneDrive';
+
+  // The environment root in extended form, the data directory in ordinary form. This is
+  // the realistic direction: `RHODES_DATA_DIR` may not use the extended form at all (an
+  // extended-length data directory is refused earlier, as a UNC-looking path), but a
+  // client can advertise `%OneDrive%` either way.
+  expectConfigError(
+    () => loadConfig({ RHODES_DATA_DIR: 'C:\\Users\\Owner\\OneDrive\\RHODES', OneDrive: extendedRoot }),
+    'config.data_dir_synced_folder',
+  );
+
+  // Equality, in both directions, through the containment helper.
+  assert.equal(isSyncedFolderPath('C:\\Users\\Owner\\OneDrive\\RHODES', { OneDrive: extendedRoot }), true);
+  assert.equal(isSyncedFolderPath(`${extendedRoot}\\RHODES`, { OneDrive: ordinaryRoot }), true);
+  assert.equal(isSyncedFolderPath(extendedRoot, { OneDrive: extendedRoot.replace(/\\/g, '/') }), true);
+
+  // Mixed separators and a trailing separator inside the extended form.
+  assert.equal(isSyncedFolderPath('C:\\Users\\Owner\\OneDrive\\RHODES', { OneDrive: '\\\\?\\C:/Users\\Owner\\OneDrive\\' }), true);
+
+  // Case-insensitivity is unchanged by the extra step.
+  assert.equal(isSyncedFolderPath('C:\\users\\OWNER\\onedrive\\RHODES', { OneDrive: extendedRoot }), true);
+
+  // A sibling of the extended root is still a sibling, not a child.
+  assert.equal(isSyncedFolderPath('C:\\Users\\Owner\\OneDriveBackup\\RHODES', { OneDrive: extendedRoot }), false);
+});
+
+test('an extended-length UNC root keeps its share identity', () => {
+  const extendedUncRoot = '\\\\?\\UNC\\fileserver\\share\\Sync';
+
+  // The same share written as an extended UNC root and as a plain UNC target.
+  assert.equal(
+    isSyncedFolderPath('\\\\fileserver\\share\\Sync\\RHODES', { OneDrive: extendedUncRoot }),
+    true,
+    'plain UNC target under an extended UNC root',
+  );
+  assert.equal(
+    isSyncedFolderPath('\\\\?\\UNC\\fileserver\\share\\Sync\\RHODES', { OneDrive: '\\\\fileserver\\share\\Sync' }),
+    true,
+    'extended UNC target under a plain UNC root',
+  );
+
+  // A local path must never be mistaken for a path inside a share. `C:\fileserver\share`
+  // reads almost the same but is a directory on the local disk.
+  assert.equal(
+    isSyncedFolderPath('C:\\fileserver\\share\\Sync\\RHODES', { OneDrive: extendedUncRoot }),
+    false,
+    'a local path is not inside a share',
+  );
+  assert.equal(
+    isSyncedFolderPath('\\\\fileserver\\share\\SyncBackup\\RHODES', { OneDrive: extendedUncRoot }),
+    false,
+    'a sibling share folder is not inside it',
+  );
+});
+
 test('a directory beside a sync root that only shares its prefix is accepted and not rewritten', () => {
   const base = tempDataDir();
   try {

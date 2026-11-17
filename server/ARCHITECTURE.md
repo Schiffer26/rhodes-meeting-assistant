@@ -156,6 +156,16 @@ lower-cased — and containment is boundary-aware: equal, or inside by a whole s
 `CloudDataBackup` beside `CloudData` is therefore not inside it. No drive letter is assumed
 or invented, and the configured directory is never rewritten.
 
+The extended-length prefix is removed **before** separators are normalised, because
+`\\?\` is recognised by its literal double separator: flattening it first would leave
+`\?\C:\Users\Owner\OneDrive` to be resolved as a path on the current drive — a key that
+matches nothing. A share likewise keeps both leading separators, so
+`\\?\UNC\fileserver\share` normalises to `\\fileserver\share` and is never described as a
+directory on the local disk. One consequence worth knowing: `RHODES_DATA_DIR` may not itself
+use the extended-length form — it is refused earlier as a UNC-looking path
+(`config.data_dir_network_share`), which is conservative but safe; the normalisation above
+matters for the environment roots, which are not subject to that check.
+
 A refused path is never redirected to somewhere "safe"; the service exits with a
 configuration error, because quietly writing a database to a different location than the
 operator configured is worse than not starting. Nothing is created before validation
