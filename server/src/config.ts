@@ -9,6 +9,11 @@
  *   · the service binds to a loopback address ONLY — LAN exposure is a later phase,
  *     after HTTPS, individual accounts, authorisation and sessions exist;
  *   · the database lives on host-local disk — never a UNC share, never a synced folder.
+ *
+ * Phase LAN-3.1 adds the transport: `RHODES_TLS_CERT_FILE` and `RHODES_TLS_KEY_FILE` are
+ * validated here, so a bad certificate is refused at the same point as a bad host. The
+ * two rules stay independent on purpose — a valid certificate does not relax the loopback
+ * rule, and the listener still cannot bind anywhere but `127.0.0.1` or `::1`.
  */
 
 import { existsSync, lstatSync, realpathSync, statSync } from 'node:fs';
@@ -16,6 +21,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { ConfigError } from './errors.js';
+import { loadTlsMaterial, type TlsMaterial } from './tls.js';
 
 const SERVER_ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 
@@ -26,6 +32,13 @@ export interface ServerConfig {
   /** Always a loopback literal (127.0.0.1 or ::1). Never 0.0.0.0, never a LAN address. */
   readonly host: string;
   readonly port: number;
+  /**
+   * `https` only when both TLS files were supplied and validated; `http` otherwise.
+   * Derived here once so no other module re-decides it.
+   */
+  readonly transport: 'http' | 'https';
+  /** Validated TLS material, or null for plain HTTP on loopback. */
+  readonly tls: TlsMaterial | null;
   /** Absolute path of the data directory. Created at startup if absent. */
   readonly dataDir: string;
   readonly databaseFile: string;
@@ -422,6 +435,15 @@ export function loadConfig(env: EnvSource = process.env): ServerConfig {
   }
 
   const port = parsePort(readEnv(env, 'RHODES_PORT'));
+
+  // Transport, before anything touches the filesystem in a way that could create state.
+  // `loadTlsMaterial` reads and parses both files; a certificate problem therefore stops
+  // startup before the data directory is created, the database is opened or migrations run.
+  const tls = loadTlsMaterial({
+    certFile: readEnv(env, 'RHODES_TLS_CERT_FILE'),
+    keyFile: readEnv(env, 'RHODES_TLS_KEY_FILE'),
+  });
+
   const busyTimeoutMs = parseBusyTimeout(readEnv(env, 'RHODES_BUSY_TIMEOUT_MS'));
   const databaseFile = parseDatabaseFile(readEnv(env, 'RHODES_DB_FILE'));
   const dataDir = resolveDataDir(readEnv(env, 'RHODES_DATA_DIR'), nodeEnv, env);
@@ -430,6 +452,8 @@ export function loadConfig(env: EnvSource = process.env): ServerConfig {
     nodeEnv,
     host,
     port,
+    transport: tls === null ? 'http' : 'https',
+    tls,
     dataDir,
     databaseFile,
     databasePath: path.join(dataDir, databaseFile),

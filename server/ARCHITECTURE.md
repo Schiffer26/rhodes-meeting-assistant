@@ -1,14 +1,19 @@
-# RHODES API — architecture (phases LAN-1 and LAN-2)
+# RHODES API — architecture (phases LAN-1 … LAN-3.1)
 
 The shared backend foundation for RHODES: one service, one SQLite database, one
 writer. This document describes what exists today, why it is shaped this way, and what
 is deliberately still missing.
 
 > **Status.** The service has accounts, sessions and role-based authorisation
-> (LAN-2), but still binds to loopback only and serves no business data: health,
-> authentication and account administration are the whole HTTP surface. The React
-> application in `src/` is unchanged, has no login screen, and still stores its data in
-> the browser.
+> (LAN-2), and since LAN-3.1 a native HTTPS transport (below). It still binds to
+> loopback only and serves no business data: health, authentication and account
+> administration are the whole HTTP surface. The React application in `src/` is
+> unchanged, has no login screen, and still stores its data in the browser.
+>
+> **LAN-3.1 is a transport foundation, not a LAN deployment.** HTTPS can be enabled,
+> and that is all: no other computer can reach the service, because the listener still
+> refuses every address except `127.0.0.1` and `::1`. Supplying a valid certificate does
+> not relax that rule.
 
 ---
 
@@ -24,10 +29,12 @@ server/
 │   ├── run-tests.mjs            ← discovers test/*.test.ts and runs node --test via tsx
 │   └── copy-migrations.mjs      ← copies *.sql into dist/ after every build
 ├── src/
-│   ├── index.ts                 ← process entry: config → db → migrations → listen
+│   ├── index.ts                 ← process entry: signals, exit codes (no startup logic)
+│   ├── startup.ts               ← ordered startup: config+TLS → db → migrations → listen
 │   ├── app.ts                   ← Express app: health + /api/auth + /api/admin (no CORS)
-│   ├── server.ts                ← HTTP listener lifecycle + graceful close
+│   ├── server.ts                ← HTTP/HTTPS listener lifecycle + graceful close
 │   ├── config.ts                ← every environment rule, validated before any I/O
+│   ├── tls.ts                   ← certificate/key validation, TLS floor, server options
 │   ├── errors.ts                ← AppError taxonomy (code / httpStatus / exposure)
 │   ├── logger.ts                ← one JSON object per line
 │   ├── version.ts               ← service identity reported by /api/health
@@ -74,7 +81,10 @@ server/
     ├── auth-stale-authz.test.ts ← LAN-2.1: revalidation after an asynchronous hash
     ├── auth-audit.test.ts       ← LAN-2.1: required audit writes roll the change back
     ├── auth-overload.test.ts    ← LAN-2.1: KDF saturation and dummy-hash recovery
-    └── auth-login-revalidation.test.ts ← LAN-2.1a: sign-in revalidated after the await
+    ├── auth-login-revalidation.test.ts ← LAN-2.1a: sign-in revalidated after the await
+    ├── tls-config.test.ts       ← LAN-3.1: TLS refusals, ordering, loopback still enforced
+    ├── tls-transport.test.ts    ← LAN-3.1: HTTPS handshake, versions, shutdown, no key in logs
+    └── fixtures/tls/            ← TEST-ONLY certificates (see the README there)
 ```
 
 Nothing under `server/` is imported by the frontend, and the frontend build does not
@@ -102,6 +112,9 @@ untouched.
   machine in this phase. Authentication exists (LAN-2) but is deliberately *not* a
   substitute for that boundary: plain HTTP on loopback is acceptable; plain HTTP over a
   network is not.
+- The socket speaks **HTTP or HTTPS** (LAN-3.1), decided by two optional environment
+  variables. Either way it listens on loopback: the transport and the boundary are
+  separate decisions, and a certificate never widens the boundary.
 
 ---
 
@@ -120,12 +133,83 @@ structured error code; it never leaves a half-initialised database behind.
 | `RHODES_DB_FILE` | `rhodes.db` | Plain file name ending in `.db`; no directories |
 | `RHODES_BUSY_TIMEOUT_MS` | `5000` | Milliseconds a writer waits for the lock |
 | `RHODES_LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` |
+| `RHODES_TLS_CERT_FILE` | *(unset)* | PEM certificate; must be set together with the key (§3.1) |
+| `RHODES_TLS_KEY_FILE` | *(unset)* | PEM private key; must be set together with the certificate (§3.1) |
 
 Refusal codes: `config.non_loopback_host`, `config.invalid_port`,
 `config.invalid_busy_timeout`, `config.invalid_database_file`,
 `config.programdata_unavailable`, `config.data_dir_network_share`,
 `config.data_dir_synced_folder`, `config.data_dir_not_a_directory`,
-`config.data_dir_uncreatable`, `config.data_dir_unresolvable`.
+`config.data_dir_uncreatable`, `config.data_dir_unresolvable`,
+`config.tls_incomplete`, `config.tls_cert_unreadable`, `config.tls_key_unreadable`,
+`config.tls_cert_invalid`, `config.tls_key_invalid`, `config.tls_pair_mismatch`,
+`config.tls_pair_rejected`.
+
+### 3.1 · TLS transport (phase LAN-3.1)
+
+Native HTTPS using Node's own `node:https` / `node:tls`. No reverse proxy and no
+external web server: there is no second process to configure, patch or misroute, and no
+place for the loopback rule to be bypassed.
+
+| Situation | Result |
+| --- | --- |
+| Neither variable set | **HTTP** on loopback. Development and LAN-2.1a behaviour, unchanged |
+| Both set, material valid | **HTTPS** on loopback |
+| Only one set | Refused: `config.tls_incomplete` |
+| File missing, unreadable, empty, or a directory | Refused: `config.tls_cert_unreadable` / `config.tls_key_unreadable` |
+| Not PEM, not X.509, or not a private key | Refused: `config.tls_cert_invalid` / `config.tls_key_invalid` |
+| Certificate does not belong to the key | Refused: `config.tls_pair_mismatch` |
+| OpenSSL cannot build a context from the pair | Refused: `config.tls_pair_rejected` |
+
+**There is no fallback.** A half-configured or broken TLS setup stops startup; the
+service never quietly serves HTTP instead. A silent downgrade would be invisible in
+production — the one failure mode that must not be possible.
+
+Protocol rules:
+
+- **TLS 1.2 is the floor**, stated explicitly in `src/tls.ts` and passed to the listener,
+  so the guarantee does not depend on the runtime's current default. TLS 1.0 and 1.1 are
+  withdrawn (RFC 8996); the server answers such an attempt with `tlsv1 alert protocol
+  version`.
+- **TLS 1.3 remains available.** No maximum version is set.
+- **No cipher list is configured.** Node's secure defaults stay in force; pinning a list
+  here would create a second, stale copy of a policy the runtime already maintains and
+  would risk reintroducing an obsolete cipher.
+- Certificate verification is never disabled, and `NODE_TLS_REJECT_UNAUTHORIZED` is never
+  set by the service, its tests, or this document. `trust proxy` stays off.
+
+File requirements:
+
+- PEM format, UTF-8. The certificate file holds the leaf first, with any intermediate
+  chain after it; the key file holds one **unencrypted** private key (passphrase-protected
+  keys are not supported in this phase, and no passphrase is read from the environment).
+- Both files are read **once, at startup**. Replacing a certificate requires a restart —
+  deliberate for this phase, because a hot reload would add a failure mode (a half-written
+  file picked up mid-flight) with no benefit on a single-host service.
+- Validity dates are logged, not enforced. An expired certificate is an operational
+  problem that clients will refuse anyway, and refusing at startup would make the service
+  depend on the host clock being right. Check `validTo` in the startup log.
+
+Operational responsibility:
+
+- **The service never generates certificates.** Nothing is created, signed or installed
+  at startup; provisioning is an operational task for a later phase (§13 item 18).
+- **The certificate must be trusted by client computers before any future LAN
+  deployment.** Until it is, a browser or client will warn or refuse — which is the
+  correct behaviour, and must not be worked around by disabling verification.
+- **Protect the private-key file with a restrictive Windows ACL**, readable only by the
+  service account, for example:
+  `icacls C:\RHODES\tls\rhodes.key /inheritance:r /grant:r "<ACCOUNT>:R"`.
+  On POSIX the startup log warns (`tls.key_permissions_loose`) when the key is readable
+  by group or others; on Windows the ACL cannot be inspected from Node, so it is the
+  operator's responsibility and is documented rather than assumed.
+- A key in the repository, in a log, in a chat message, or on a share is a leaked key.
+  The fixtures under `test/fixtures/tls/` are **test-only**, are public by construction,
+  and must never be installed on the host.
+
+What LAN-3.1 does **not** do: it does not bind to a LAN address, change the default host,
+open a firewall port, configure a router, add CORS, or decide how a client stores a token.
+**LAN access remains disabled.**
 
 ### Path resolution (symbolic links and Windows junctions)
 
@@ -631,7 +715,7 @@ npm run server:admin:reset       # new password for an administrator (recovery)
 
 | Assumption | Consequence |
 | --- | --- |
-| The service binds to loopback only and speaks plain HTTP | Credentials never cross a network here. HTTP on loopback is not a credential-transport risk; **HTTPS is a precondition for any LAN exposure**, and is not implemented |
+| The service binds to loopback only, and speaks HTTP or HTTPS | Credentials never cross a network here. HTTP on loopback is not a credential-transport risk. HTTPS exists since LAN-3.1 but is unused by default; **any change that binds to a LAN address requires it to be enabled in the same change** |
 | The host itself is trusted | Anyone who can read the data directory can bootstrap or reset an account. File permissions, not passwords, protect that boundary |
 | One process, one host | Throttle state and session state are in that process (sessions in SQLite, counters in memory) |
 | No client is attached yet | The token has no storage decision to make yet. When a client is added it must hold the token **in memory only** — never `localStorage`, which any script in the page can read |
@@ -685,10 +769,15 @@ npm --prefix server install     # once, on the host
 npm run server:dev              # development: tsx watch, data in <repo>/.local-data
 ```
 
-First start, in order: load and validate configuration → create the data directory if
-absent → open `rhodes.db` and verify pragmas + integrity → apply pending migrations →
-listen on loopback. A fresh database contains **schema only**: no demonstration people,
-meetings, notes or audit rows.
+First start, in order: load and validate configuration *including the TLS material* →
+create the data directory if absent → open `rhodes.db` and verify pragmas + integrity →
+apply pending migrations → listen on loopback (HTTP, or HTTPS when configured). A fresh
+database contains **schema only**: no demonstration people, meetings, notes or audit rows.
+
+The sequence lives in `src/startup.ts` and is driven, unchanged, by the tests. The order
+matters for LAN-3.1: a bad certificate is detected at step 1, so it cannot create a data
+directory, open or modify the database, apply a migration, or open a socket. If the
+listener itself fails to bind, the database is closed on the way out, as before.
 
 `.local-data/` is git-ignored. It is development state, not a deliverable, and must
 never be committed or copied into the repository.
@@ -733,7 +822,7 @@ npm run server:test       # backend test suite
 npm run server:migrate    # apply pending migrations, or --status to inspect
 ```
 
-Production on the Windows host:
+Production on the Windows host, plain HTTP on loopback (the default):
 
 ```powershell
 $env:NODE_ENV   = "production"
@@ -741,8 +830,25 @@ $env:RHODES_PORT = "4317"
 npm run server:start
 ```
 
+Production on the Windows host with HTTPS on loopback (LAN-3.1):
+
+```powershell
+$env:NODE_ENV            = "production"
+$env:RHODES_PORT         = "4317"
+$env:RHODES_TLS_CERT_FILE = "C:\RHODES\tls\rhodes.crt.pem"
+$env:RHODES_TLS_KEY_FILE  = "C:\RHODES\tls\rhodes.key.pem"
+npm run server:start
+```
+
+The startup log names the transport (`"transport":"http"` or `"https"`), and the
+`service.listening` line carries the final URL with the matching scheme, so an operator
+can confirm which mode is running without inspecting the configuration. Neither line
+contains certificate or key material — only the subject, validity window and SHA-256
+fingerprint of the certificate.
+
 Stop with `Ctrl+C` (or `SIGTERM`): the listener closes, in-flight requests finish, the
-WAL is checkpointed, the connection closes, and the process exits `0`.
+WAL is checkpointed, the connection closes, and the process exits `0`. Shutdown is the
+same for both transports, and the database is closed after the listener in both.
 
 Run the service on the host, not from a mapped drive or a network path — the working
 directory and the data directory must both be local.
@@ -770,20 +876,24 @@ policy and hashing, login throttling, the administrative account surface, and lo
 provisioning/recovery.
 
 Deliberately **not** implemented, and not started here: multi-factor authentication;
-LAN exposure (the listener stays on loopback); HTTPS certificates and certificate
-pinning; a login or account-administration screen in the React application; storing or
-refreshing tokens in a client; Electron packaging; installers or Windows service
-registration; frontend API integration; import of existing browser records; Google
-Calendar/Meet integration; shared live synchronisation; offline editing; any visual
-redesign.
+LAN exposure (the listener stays on loopback); certificate provisioning, a certificate
+authority, or Windows trust-store installation; certificate pinning; a login or
+account-administration screen in the React application; storing or refreshing tokens in a
+client; Electron packaging; installers or Windows service registration; frontend API
+integration; import of existing browser records; Google Calendar/Meet integration; shared
+live synchronisation; offline editing; any visual redesign.
 
-Two known gaps that a later phase must close before this is used by more than one person
-on one machine:
+Gaps that a later phase must close before this is used by more than one person on one
+machine:
 
-- **No TLS.** Credentials and tokens must not cross a network in clear text. Any change
-  that binds the service to a LAN address requires HTTPS in the same change.
-- **In-memory throttle state.** It is per process and per restart, and the address
-  dimension is meaningless while every request arrives on loopback.
+- **TLS is available but not deployed.** LAN-3.1 built the transport; it did not
+  provision a certificate, install it in a trust store, enable a LAN bind, or test any of
+  that on the host. The service is still loopback-only, and by default still HTTP.
+- **Network-level rate limiting does not exist.** The login throttle is in-memory, per
+  process and per restart, and its address dimension is meaningless while every request
+  arrives on loopback. It must not be described as network-level protection.
+- **No firewall or router configuration** is done anywhere in this repository, and no
+  Windows Firewall rule is opened by the service.
 
 The schema is shaped for the next phase: `audit_records.actor`,
 `meeting_notes.updated_by`, `note_revisions.author` and `meeting_attendees` are already
@@ -859,3 +969,31 @@ office, verify on the actual Windows host:
     `node --import tsx --test test/config.test.ts` on the host to confirm it with real
     `path.win32` values, including a POSIX-style `OneDrive` root and a junction into a
     synced folder.
+18. **HTTPS transport on Windows (LAN-3.1, not yet run on Windows).** Everything below
+    was executed on Linux only; the Windows-specific parts are the file paths, the ACLs
+    and the trust store.
+    a. Provision a certificate for `localhost` / `127.0.0.1` (a self-signed one is fine
+       for this check), place `rhodes.crt.pem` and `rhodes.key.pem` under
+       `C:\RHODES\tls\`, and lock the key down:
+       `icacls C:\RHODES\tls\rhodes.key.pem /inheritance:r /grant:r "<ACCOUNT>:R"`.
+    b. Start with both `RHODES_TLS_CERT_FILE` and `RHODES_TLS_KEY_FILE` set. Expect
+       `"transport":"https"` in `service.starting` and a `https://127.0.0.1:4317` URL in
+       `service.listening`.
+    c. `Get-NetTCPConnection -LocalPort 4317` must still show `127.0.0.1` only — never
+       `0.0.0.0`, `::` or a LAN address. This is the single most important check in the
+       phase: TLS must not have widened the listener.
+    d. `curl.exe --cacert C:\RHODES\tls\rhodes.crt.pem https://127.0.0.1:4317/api/health`
+       returns the same JSON as the HTTP endpoint. Without `--cacert`, it must fail
+       verification — if it succeeds, something is trusting the certificate that should
+       not be.
+    e. Confirm TLS 1.0/1.1 are refused from the host, for example
+       `curl.exe --tlsv1.1 --tls-max 1.1 -k https://127.0.0.1:4317/api/health` fails, and
+       that `--tlsv1.2` and `--tlsv1.3` both succeed.
+    f. Set only one of the two variables, then point one at a missing file, then swap in
+       a key from a different certificate: each must exit non-zero with the matching
+       `config.tls_*` code, and must **not** create `%ProgramData%\RHODES\data` on a
+       first run. Never fall back to HTTP.
+    g. `Ctrl+C` with HTTPS enabled exits `0`, leaves no `-wal` file, and the process is
+       gone (`Get-Process node`).
+    h. Import the certificate into `Cert:\LocalMachine\Root` only when a later phase
+       explicitly authorises client trust; installing it is not part of this phase.
