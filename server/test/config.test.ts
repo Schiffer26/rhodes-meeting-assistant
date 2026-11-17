@@ -10,7 +10,7 @@ import { chmodSync, existsSync, mkdirSync, symlinkSync, writeFileSync } from 'no
 import path from 'node:path';
 import test from 'node:test';
 
-import { loadConfig, resolveRealPath } from '../src/config.js';
+import { isSyncedFolderPath, loadConfig, resolveRealPath } from '../src/config.js';
 import { ConfigError } from '../src/errors.js';
 import { removeDir, tempDataDir } from './helpers.js';
 
@@ -85,6 +85,118 @@ test('a cloud-synchronised folder is refused as a data directory', () => {
     () => loadConfig({ RHODES_DATA_DIR: '/home/office/CloudData/RHODES', OneDrive: '/home/office/CloudData' }),
     'config.data_dir_synced_folder',
   );
+});
+
+test('a sync root is resolved with the same rules as the data directory before comparison', () => {
+  // The Windows report (LAN-2.1a): the target is compared after `path.resolve`, so a root
+  // left unresolved could never match it. Both sides now go through the same key.
+  expectConfigError(
+    () => loadConfig({ RHODES_DATA_DIR: '/home/office/CloudData/RHODES', OneDrive: '/home/office/CloudData' }),
+    'config.data_dir_synced_folder',
+  );
+
+  // Native Windows-style values, written the way a real OneDrive client sets them.
+  for (const envKey of ['OneDrive', 'OneDriveCommercial', 'OneDriveConsumer']) {
+    expectConfigError(
+      () =>
+        loadConfig({
+          RHODES_DATA_DIR: 'C:\\Users\\Ana\\OneDrive - Contoso\\RHODES\\data',
+          [envKey]: 'C:\\Users\\Ana\\OneDrive - Contoso',
+        }),
+      'config.data_dir_synced_folder',
+    );
+  }
+
+  // Dropbox through its own root, for a folder whose name gives nothing away.
+  expectConfigError(
+    () => loadConfig({ RHODES_DATA_DIR: '/home/office/SyncArea/RHODES', Dropbox: '/home/office/SyncArea' }),
+    'config.data_dir_synced_folder',
+  );
+
+  // The target may be the root itself, or any depth below it.
+  expectConfigError(
+    () => loadConfig({ RHODES_DATA_DIR: '/home/office/CloudData', OneDrive: '/home/office/CloudData' }),
+    'config.data_dir_synced_folder',
+  );
+  expectConfigError(
+    () => loadConfig({ RHODES_DATA_DIR: '/home/office/CloudData/a/b/RHODES', OneDrive: '/home/office/CloudData' }),
+    'config.data_dir_synced_folder',
+  );
+
+  // Trailing separators, mixed separators and a different case all compare equal.
+  expectConfigError(
+    () => loadConfig({ RHODES_DATA_DIR: '/home/office/CloudData/RHODES', OneDrive: '/home/office/CloudData/' }),
+    'config.data_dir_synced_folder',
+  );
+  expectConfigError(
+    () => loadConfig({ RHODES_DATA_DIR: 'C:\\Users\\Ana/OneDrive/RHODES', OneDrive: 'C:/Users/Ana\\OneDrive' }),
+    'config.data_dir_synced_folder',
+  );
+  expectConfigError(
+    () => loadConfig({ RHODES_DATA_DIR: '/home/office/clouddata/RHODES', OneDrive: '/home/office/CloudData' }),
+    'config.data_dir_synced_folder',
+  );
+});
+
+test('sync-root containment is boundary-aware, not a text-prefix match', () => {
+  const withRoot = (root: string) => ({ OneDrive: root });
+
+  assert.equal(isSyncedFolderPath('/home/office/CloudData', withRoot('/home/office/CloudData')), true, 'equal');
+  assert.equal(
+    isSyncedFolderPath('/home/office/CloudData/RHODES', withRoot('/home/office/CloudData')),
+    true,
+    'nested',
+  );
+  assert.equal(
+    isSyncedFolderPath('/home/office/CloudData/RHODES/data', withRoot('/home/office/CloudData/')),
+    true,
+    'nested, root with a trailing separator',
+  );
+  assert.equal(
+    isSyncedFolderPath('/home/office/CloudData\\RHODES', withRoot('/home/office/CloudData')),
+    true,
+    'target with the other separator',
+  );
+  assert.equal(
+    isSyncedFolderPath('/home/office/CLOUDDATA/RHODES', withRoot('/home/office/clouddata')),
+    true,
+    'case-insensitive',
+  );
+
+  assert.equal(
+    isSyncedFolderPath('/home/office/CloudDataBackup/RHODES', withRoot('/home/office/CloudData')),
+    false,
+    'a sibling sharing only the text prefix is not inside the root',
+  );
+  assert.equal(
+    isSyncedFolderPath('/home/office/RHODES', withRoot('/home/office/CloudData')),
+    false,
+    'an unrelated directory is not inside the root',
+  );
+  assert.equal(isSyncedFolderPath('/home/office/RHODES', {}), false, 'no root, no name: accepted');
+});
+
+test('a directory beside a sync root that only shares its prefix is accepted and not rewritten', () => {
+  const base = tempDataDir();
+  try {
+    const target = path.join(base, 'CloudDataBackup', 'RHODES');
+    const config = loadConfig({ RHODES_DATA_DIR: target, OneDrive: path.join(base, 'CloudData') });
+
+    // Accepted, and still exactly where the operator asked for it.
+    assert.equal(config.dataDir, path.resolve(target));
+    assert.equal(config.databasePath, path.join(path.resolve(target), 'rhodes.db'));
+  } finally {
+    removeDir(base);
+  }
+});
+
+test('well-known sync folder names are refused without any environment root', () => {
+  for (const name of ['OneDrive', 'Dropbox', 'Google Drive', 'GoogleDrive', 'SharePoint', 'iCloud Drive', 'Box']) {
+    expectConfigError(
+      () => loadConfig({ RHODES_DATA_DIR: path.join(path.sep + 'home', 'office', name, 'RHODES') }),
+      'config.data_dir_synced_folder',
+    );
+  }
 });
 
 test('case 10: invalid configuration fails safely and creates nothing', () => {

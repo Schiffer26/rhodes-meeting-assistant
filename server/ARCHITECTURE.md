@@ -144,6 +144,18 @@ share. `resolveDataDir` therefore resolves the path before accepting it.
    extended form would slip past the network-share check.
 4. The same UNC and synchronised-folder rules run again against the resolved target.
 
+**Comparing a target with a sync root (LAN-2.1a correction).** The synchronised-folder
+check also compares the target with the roots the client advertises in the environment
+(`OneDrive`, `OneDriveCommercial`, `OneDriveConsumer`, `Dropbox`). The target is a
+`path.resolve`d value, so on Windows `RHODES_DATA_DIR=/home/office/CloudData/RHODES`
+becomes `C:\home\office\CloudData\RHODES`; comparing an unresolved root against that
+could never match, and a synchronised directory was accepted. Both sides now pass through
+one comparison key — separators unified to the platform's, resolved by the same rules as
+everything else, the `\\?\` prefix stripped, trailing separators dropped and the result
+lower-cased — and containment is boundary-aware: equal, or inside by a whole segment.
+`CloudDataBackup` beside `CloudData` is therefore not inside it. No drive letter is assumed
+or invented, and the configured directory is never rewritten.
+
 A refused path is never redirected to somewhere "safe"; the service exits with a
 configuration error, because quietly writing a database to a different location than the
 operator configured is worse than not starting. Nothing is created before validation
@@ -830,3 +842,10 @@ office, verify on the actual Windows host:
     `audit_records` trigger leaves no account behind, that a demotion during an in-flight
     creation is refused, and that an administrator resetting a password while that user is
     signing in produces no session for the pending attempt.
+17. **Cloud-sync root comparison on Windows (LAN-2.1a).** The target and each
+    `OneDrive`/`Dropbox` root are now resolved with the same rules before they are
+    compared, which is what the reported Windows failure needed. The correction was
+    verified by emulating Windows path resolution on Linux; run
+    `node --import tsx --test test/config.test.ts` on the host to confirm it with real
+    `path.win32` values, including a POSIX-style `OneDrive` root and a junction into a
+    synced folder.

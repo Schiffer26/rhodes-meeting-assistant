@@ -247,15 +247,55 @@ export function isNetworkSharePath(target: string): boolean {
 }
 
 /**
+ * Reduce a path to the key used for every containment comparison below.
+ *
+ * Both sides of a comparison go through exactly this function, and that is the whole
+ * point (LAN-2.1a correction): the data directory is compared against `path.resolve`d
+ * values, so an environment root compared verbatim can never match it on a platform that
+ * resolves differently from how the value was written. On Windows,
+ * `RHODES_DATA_DIR=/home/office/CloudData/RHODES` resolves to
+ * `C:\home\office\CloudData\RHODES`, while `OneDrive=/home/office/CloudData` used to be
+ * compared as a bare POSIX string — the containment check silently missed and a
+ * synchronised directory was accepted.
+ *
+ * The key is: separators unified to the platform's, resolved by the same rules the rest
+ * of this file uses, long-path prefix removed, trailing separators dropped, lower-cased
+ * for a case-insensitive comparison. No drive letter is assumed or invented — whatever
+ * the platform's resolution produces is what is compared, on both sides alike.
+ */
+function comparisonKey(value: string): string {
+  const unified = value.trim().replace(/[\\/]+/g, path.sep);
+  const resolved = stripWindowsLongPathPrefix(path.resolve(unified)).replace(/[\\/]+$/, '');
+  return (resolved === '' ? path.sep : resolved).toLowerCase();
+}
+
+/**
+ * Directory-boundary containment: equal, or inside by a whole segment.
+ *
+ * `CloudDataBackup` shares eight characters with `CloudData` but no boundary, and a
+ * backup folder beside a sync root must not be treated as part of it.
+ */
+function isSameOrInside(candidate: string, root: string): boolean {
+  if (root === '') return false;
+  if (candidate === root) return true;
+  const prefix = root.endsWith(path.sep) ? root : root + path.sep;
+  return candidate.startsWith(prefix);
+}
+
+/**
  * Detect paths that a cloud client would synchronise.
  *
  * Two independent signals: the configured sync roots in the environment, and the
  * well-known folder names a synchronised tree lives under. A *mapped network drive*
  * (e.g. Z:\RHODES) cannot be detected reliably from Node, so the operational rule is
  * documented as well — see ARCHITECTURE.md.
+ *
+ * The target and every root are reduced to the same comparison key, so the check behaves
+ * identically whether the values were typed with forward slashes, backslashes, a trailing
+ * separator, or in the other platform's style.
  */
 export function isSyncedFolderPath(target: string, env: EnvSource = process.env): boolean {
-  const lower = target.toLowerCase();
+  const candidate = comparisonKey(target);
   const roots = [
     readEnv(env, 'OneDrive'),
     readEnv(env, 'OneDriveCommercial'),
@@ -263,15 +303,13 @@ export function isSyncedFolderPath(target: string, env: EnvSource = process.env)
     readEnv(env, 'Dropbox'),
   ]
     .filter((value): value is string => typeof value === 'string')
-    .map((value) => value.toLowerCase());
+    .map((value) => comparisonKey(value));
 
   for (const root of roots) {
-    if (root.length > 0 && (lower === root || lower.startsWith(root.endsWith(path.sep) ? root : root + path.sep))) {
-      return true;
-    }
+    if (isSameOrInside(candidate, root)) return true;
   }
 
-  const segments = lower.split(/[\\/]+/).filter(Boolean);
+  const segments = candidate.split(/[\\/]+/).filter(Boolean);
   return segments.some((segment) => SYNCED_PATH_SEGMENTS.includes(segment));
 }
 
