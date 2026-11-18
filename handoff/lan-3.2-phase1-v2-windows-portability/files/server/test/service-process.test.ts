@@ -279,11 +279,18 @@ test('SIGTERM is a graceful shutdown on POSIX', async (t) => {
   }
 });
 
-test('a forced termination on Windows is not a graceful shutdown', async (t) => {
-  // The mirror image of the test above: on Windows `kill()` terminates the process through
-  // TerminateProcess. Nothing runs afterwards, so the process must NOT produce a shutdown
-  // record — and the handoff documentation classifies this as an unclean stop, which is
-  // what a Job Object termination looks like too.
+test('a forced termination on Windows is reported as a signal death but is not a shutdown', async (t) => {
+  // The mirror image of the test above. On Windows `kill()` does not deliver a signal: Node
+  // emulates it with TerminateProcess, and the documentation is explicit that the parent is
+  // still told the child "was terminated by signal" — so the exit event reads
+  // `code: null, signal: 'SIGTERM'` (Node v24 process docs, "Windows does not support
+  // signals … afterwards, subprocess will report that the process was terminated by
+  // signal"). libuv does the bookkeeping: `uv_process_kill()` calls
+  // `TerminateProcess(handle, 1)` and then sets `process->exit_signal = signum`
+  // (libuv src/win/process.c), which is what surfaces as `signal`.
+  //
+  // This is exactly why the shutdown *record* is the discriminator and the exit metadata is
+  // not: a killed Windows child looks identical to a gracefully terminated POSIX one.
   if (process.platform !== 'win32') {
     t.skip('Windows termination semantics only; POSIX graceful shutdown is covered above');
     return;
@@ -297,8 +304,8 @@ test('a forced termination on Windows is not a graceful shutdown', async (t) => 
     service.child.kill();
     const exit = await service.waitForExit();
 
-    assert.equal(exit.signal, null, 'Windows does not report POSIX signal metadata');
-    assert.notEqual(exit.code, 0, 'a terminated child must not report a clean exit');
+    assert.equal(exit.code, null, 'a killed child reports no exit code');
+    assert.equal(exit.signal, 'SIGTERM', 'Node reports the requested signal, not the mechanism');
     assert.equal(
       service.lines().some((line) => line.msg === 'service.shutdown_complete'),
       false,

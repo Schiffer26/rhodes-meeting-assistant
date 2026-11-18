@@ -846,9 +846,21 @@ can confirm which mode is running without inspecting the configuration. Neither 
 contains certificate or key material — only the subject, validity window and SHA-256
 fingerprint of the certificate.
 
-Stop with `Ctrl+C` (or `SIGTERM`): the listener closes, in-flight requests finish, the
-WAL is checkpointed, the connection closes, and the process exits `0`. Shutdown is the
-same for both transports, and the database is closed after the listener in both.
+Stop with `Ctrl+C` in a console, or with a `SIGTERM` delivered by the operating system on
+POSIX. Either way the registered handler runs: the listener closes, in-flight requests
+finish, the WAL is checkpointed, the connection closes, and a clean result exits `0`.
+Shutdown is the same for both transports, and the database is closed after the listener in
+both.
+
+What can actually *deliver* a stop is platform-specific, and conflating the three cases is
+how a "graceful shutdown" claim goes wrong on Windows:
+
+| trigger | POSIX | Windows |
+| --- | --- | --- |
+| `Ctrl+C` at a console | `SIGINT` delivered → handler → graceful | `SIGINT` raised from the console control event → handler → graceful (interactive consoles only) |
+| `SIGTERM` from the OS | delivered → handler → graceful | no such signal exists on Windows; nothing is delivered |
+| `process.kill()` / `ChildProcess.kill()` | delivered → handler → graceful | emulated: unconditional termination reported as a signal death; **no handler runs** |
+| stdin control command (§10.2) | available when enabled | **the supported graceful stop for a service** |
 
 ### 10.1 · What a shutdown reports, and what it exits with (phase LAN-3.2)
 
@@ -961,22 +973,48 @@ There is deliberately no HTTP shutdown endpoint, no PID file, no named pipe and 
 process: the only ways to stop the service are the channel above, a POSIX signal, or the
 host terminating the Job Object (which is recorded as unclean).
 
-**Windows has no POSIX signals.** Node does not deliver `SIGTERM` or `SIGINT` to a Windows
-process, and `ChildProcess.kill('SIGTERM')` (or `.kill()`) ends it through
-`TerminateProcess`: no handler runs, no final line is written, and no exit code `0` is
-reported. A graceful Windows stop therefore has exactly one supported trigger — the stdin
-command documented above:
+**On Windows, three different things are routinely confused.** Only the first is a
+graceful stop, and it needs a human at a console:
 
-```powershell
-# graceful: the child runs its shutdown sequence and writes service.shutdown_complete
-$writer.WriteLine('{"cmd":"shutdown"}')
-```
+1. **Interactive `Ctrl+C`.** A Windows console raises a control event, Node turns it into a
+   `SIGINT` event, and the registered handler runs the full shutdown sequence — the process
+   exits `0`. `SIGINT` from the terminal is the one signal Windows genuinely delivers
+   (Node docs: "`SIGINT` from the terminal is supported on all platforms"). This is the
+   operator path, and it is part of the Windows verification checklist.
+2. **Windows service host.** A service has no console to press `Ctrl+C` on, and Windows
+   delivers no `SIGTERM` — "`SIGTERM` is not supported on Windows, it can be listened on",
+   which is to say it is never received. **The supportable graceful stop for the host is the
+   stdin command documented above**, and when the .NET host exists an SCM stop request will
+   drive that same command:
 
-When the .NET service host exists, an SCM stop request will drive this same command; it
-must never fall back to terminating the child as a normal stop. Termination —
-`ChildProcess.kill()`, `TerminateProcess`, or `TerminateJobObject` — is classified
-**unclean** on every platform: it is the last resort when the deadline expires, not a
-shutdown mechanism. A clean Windows stop is the stdin command **and** exit code `0`
+   ```powershell
+   # graceful: the child runs its shutdown sequence and writes service.shutdown_complete
+   $writer.WriteLine('{"cmd":"shutdown"}')
+   ```
+
+3. **Programmatic kill.** `ChildProcess.kill('SIGINT')` and `ChildProcess.kill('SIGTERM')`
+   (and `process.kill(pid, …)`) do **not** deliver a signal on Windows. Node emulates the
+   request with `TerminateProcess` and then reports the child as terminated by that signal —
+   "afterwards, subprocess will report that the process was terminated by signal" — so the
+   exit event reads `code: null, signal: 'SIGTERM'` even though **no handler ran and no
+   final line was written**. That report is indistinguishable from a graceful POSIX death if
+   you look only at `signal`, which is why the Windows regression test asserts the *absence
+   of `service.shutdown_complete`* rather than the exit metadata.
+
+Termination is therefore **not** uniformly unclean, and the difference decides how a result
+may be read:
+
+- **POSIX `SIGTERM` delivered to the handler** — potentially graceful. The handler runs the
+  whole sequence; whether the stop was clean is decided by the result itself (exit `0`, a
+  final `service.shutdown_complete` with `ok: true`), not by the fact that a signal started
+  it.
+- **Windows, Node's `ChildProcess.kill()` emulation** — forceful and unclean: no handler, no
+  final line, whatever the exit metadata says.
+- **Windows, `TerminateProcess` / `TerminateJobObject`** — forceful and unclean, and the
+  deadline backstop for a service host. A Job Object that had to be terminated never
+  produced a clean stop.
+
+A clean Windows stop remains the conjunction: the stdin command **and** exit code `0`
 **and** a final `service.shutdown_complete` line with `ok: true` **and** an empty Job
 Object.
 
@@ -1073,8 +1111,9 @@ office, verify on the actual Windows host:
     death, and the `SIGTERM` graceful-shutdown test is POSIX-only, with a Windows test
     asserting that a forced termination produces no `service.shutdown_complete` line. The
     correction has been verified only on Linux (one test skipped there by design); confirm
-    on the host that the Windows branch of each test runs and passes, and that a
-    `specify /child` or SCM stop path never produces a `0` exit code by termination.
+    on the host that the Windows branch of each test runs and passes: a killed child must
+    report `code: null, signal: 'SIGTERM'` and still leave no `service.shutdown_complete`
+    line, and an interactive `Ctrl+C` must produce exit `0` with a final line.
 
 12. **REPLACE protection on Windows.** `PRAGMA recursive_triggers` is a connection-level
     SQLite setting, identical on every platform, but the `INSERT OR REPLACE` refusal has

@@ -1,8 +1,33 @@
 diff --git a/server/ARCHITECTURE.md b/server/ARCHITECTURE.md
-index c8d1b27..ffe3c65 100644
+index c8d1b27..0e73abd 100644
 --- a/server/ARCHITECTURE.md
 +++ b/server/ARCHITECTURE.md
-@@ -958,9 +958,28 @@ With the flag absent, stdin is untouched: typing at a developer's terminal can n
+@@ -846,9 +846,21 @@ can confirm which mode is running without inspecting the configuration. Neither
+ contains certificate or key material — only the subject, validity window and SHA-256
+ fingerprint of the certificate.
+ 
+-Stop with `Ctrl+C` (or `SIGTERM`): the listener closes, in-flight requests finish, the
+-WAL is checkpointed, the connection closes, and the process exits `0`. Shutdown is the
+-same for both transports, and the database is closed after the listener in both.
++Stop with `Ctrl+C` in a console, or with a `SIGTERM` delivered by the operating system on
++POSIX. Either way the registered handler runs: the listener closes, in-flight requests
++finish, the WAL is checkpointed, the connection closes, and a clean result exits `0`.
++Shutdown is the same for both transports, and the database is closed after the listener in
++both.
++
++What can actually *deliver* a stop is platform-specific, and conflating the three cases is
++how a "graceful shutdown" claim goes wrong on Windows:
++
++| trigger | POSIX | Windows |
++| --- | --- | --- |
++| `Ctrl+C` at a console | `SIGINT` delivered → handler → graceful | `SIGINT` raised from the console control event → handler → graceful (interactive consoles only) |
++| `SIGTERM` from the OS | delivered → handler → graceful | no such signal exists on Windows; nothing is delivered |
++| `process.kill()` / `ChildProcess.kill()` | delivered → handler → graceful | emulated: unconditional termination reported as a signal death; **no handler runs** |
++| stdin control command (§10.2) | available when enabled | **the supported graceful stop for a service** |
+ 
+ ### 10.1 · What a shutdown reports, and what it exits with (phase LAN-3.2)
+ 
+@@ -958,9 +970,54 @@ With the flag absent, stdin is untouched: typing at a developer's terminal can n
  the server, and `service.ready` still reports `"serviceMode":false`.
  
  There is deliberately no HTTP shutdown endpoint, no PID file, no named pipe and no helper
@@ -10,29 +35,55 @@ index c8d1b27..ffe3c65 100644
 +process: the only ways to stop the service are the channel above, a POSIX signal, or the
  host terminating the Job Object (which is recorded as unclean).
  
-+**Windows has no POSIX signals.** Node does not deliver `SIGTERM` or `SIGINT` to a Windows
-+process, and `ChildProcess.kill('SIGTERM')` (or `.kill()`) ends it through
-+`TerminateProcess`: no handler runs, no final line is written, and no exit code `0` is
-+reported. A graceful Windows stop therefore has exactly one supported trigger — the stdin
-+command documented above:
++**On Windows, three different things are routinely confused.** Only the first is a
++graceful stop, and it needs a human at a console:
 +
-+```powershell
-+# graceful: the child runs its shutdown sequence and writes service.shutdown_complete
-+$writer.WriteLine('{"cmd":"shutdown"}')
-+```
++1. **Interactive `Ctrl+C`.** A Windows console raises a control event, Node turns it into a
++   `SIGINT` event, and the registered handler runs the full shutdown sequence — the process
++   exits `0`. `SIGINT` from the terminal is the one signal Windows genuinely delivers
++   (Node docs: "`SIGINT` from the terminal is supported on all platforms"). This is the
++   operator path, and it is part of the Windows verification checklist.
++2. **Windows service host.** A service has no console to press `Ctrl+C` on, and Windows
++   delivers no `SIGTERM` — "`SIGTERM` is not supported on Windows, it can be listened on",
++   which is to say it is never received. **The supportable graceful stop for the host is the
++   stdin command documented above**, and when the .NET host exists an SCM stop request will
++   drive that same command:
 +
-+When the .NET service host exists, an SCM stop request will drive this same command; it
-+must never fall back to terminating the child as a normal stop. Termination —
-+`ChildProcess.kill()`, `TerminateProcess`, or `TerminateJobObject` — is classified
-+**unclean** on every platform: it is the last resort when the deadline expires, not a
-+shutdown mechanism. A clean Windows stop is the stdin command **and** exit code `0`
++   ```powershell
++   # graceful: the child runs its shutdown sequence and writes service.shutdown_complete
++   $writer.WriteLine('{"cmd":"shutdown"}')
++   ```
++
++3. **Programmatic kill.** `ChildProcess.kill('SIGINT')` and `ChildProcess.kill('SIGTERM')`
++   (and `process.kill(pid, …)`) do **not** deliver a signal on Windows. Node emulates the
++   request with `TerminateProcess` and then reports the child as terminated by that signal —
++   "afterwards, subprocess will report that the process was terminated by signal" — so the
++   exit event reads `code: null, signal: 'SIGTERM'` even though **no handler ran and no
++   final line was written**. That report is indistinguishable from a graceful POSIX death if
++   you look only at `signal`, which is why the Windows regression test asserts the *absence
++   of `service.shutdown_complete`* rather than the exit metadata.
++
++Termination is therefore **not** uniformly unclean, and the difference decides how a result
++may be read:
++
++- **POSIX `SIGTERM` delivered to the handler** — potentially graceful. The handler runs the
++  whole sequence; whether the stop was clean is decided by the result itself (exit `0`, a
++  final `service.shutdown_complete` with `ok: true`), not by the fact that a signal started
++  it.
++- **Windows, Node's `ChildProcess.kill()` emulation** — forceful and unclean: no handler, no
++  final line, whatever the exit metadata says.
++- **Windows, `TerminateProcess` / `TerminateJobObject`** — forceful and unclean, and the
++  deadline backstop for a service host. A Job Object that had to be terminated never
++  produced a clean stop.
++
++A clean Windows stop remains the conjunction: the stdin command **and** exit code `0`
 +**and** a final `service.shutdown_complete` line with `ok: true` **and** an empty Job
 +Object.
 +
  Run the service on the host, not from a mapped drive or a network path — the working
  directory and the data directory must both be local.
  
-@@ -1048,6 +1067,15 @@ office, verify on the actual Windows host:
+@@ -1048,6 +1105,16 @@ office, verify on the actual Windows host:
      denies the service account (for example `icacls D:\RHODES-denied /deny "SERVICE
      ACCOUNT:(OI)(CI)(F)"`), point `RHODES_DATA_DIR` inside it, and confirm the service
      exits with `config.data_dir_unresolvable` and creates nothing.
@@ -42,8 +93,9 @@ index c8d1b27..ffe3c65 100644
 +    death, and the `SIGTERM` graceful-shutdown test is POSIX-only, with a Windows test
 +    asserting that a forced termination produces no `service.shutdown_complete` line. The
 +    correction has been verified only on Linux (one test skipped there by design); confirm
-+    on the host that the Windows branch of each test runs and passes, and that a
-+    `specify /child` or SCM stop path never produces a `0` exit code by termination.
++    on the host that the Windows branch of each test runs and passes: a killed child must
++    report `code: null, signal: 'SIGTERM'` and still leave no `service.shutdown_complete`
++    line, and an interactive `Ctrl+C` must produce exit `0` with a final line.
 +
  12. **REPLACE protection on Windows.** `PRAGMA recursive_triggers` is a connection-level
      SQLite setting, identical on every platform, but the `INSERT OR REPLACE` refusal has
@@ -134,7 +186,7 @@ index 9dd6249..f692507 100644
    const emitter = new EventEmitter();
    const stdin = new PassThrough();
 diff --git a/server/test/service-process.test.ts b/server/test/service-process.test.ts
-index e056ce9..b379bc9 100644
+index e056ce9..3b948be 100644
 --- a/server/test/service-process.test.ts
 +++ b/server/test/service-process.test.ts
 @@ -221,7 +221,7 @@ test('a control channel that disappears shuts the service down instead of orphan
@@ -179,7 +231,7 @@ index e056ce9..b379bc9 100644
  
      service.child.kill('SIGTERM');
      const exit = await service.waitForExit();
-@@ -246,6 +272,38 @@ test('without service mode a terminal is not a shutdown button, and SIGTERM stil
+@@ -246,6 +272,45 @@ test('without service mode a terminal is not a shutdown button, and SIGTERM stil
      const final = service.lines().find((line) => line.msg === 'service.shutdown_complete');
      assert.equal(final?.reason, 'SIGTERM');
      assert.equal(final?.ok, true);
@@ -190,11 +242,18 @@ index e056ce9..b379bc9 100644
 +  }
 +});
 +
-+test('a forced termination on Windows is not a graceful shutdown', async (t) => {
-+  // The mirror image of the test above: on Windows `kill()` terminates the process through
-+  // TerminateProcess. Nothing runs afterwards, so the process must NOT produce a shutdown
-+  // record — and the handoff documentation classifies this as an unclean stop, which is
-+  // what a Job Object termination looks like too.
++test('a forced termination on Windows is reported as a signal death but is not a shutdown', async (t) => {
++  // The mirror image of the test above. On Windows `kill()` does not deliver a signal: Node
++  // emulates it with TerminateProcess, and the documentation is explicit that the parent is
++  // still told the child "was terminated by signal" — so the exit event reads
++  // `code: null, signal: 'SIGTERM'` (Node v24 process docs, "Windows does not support
++  // signals … afterwards, subprocess will report that the process was terminated by
++  // signal"). libuv does the bookkeeping: `uv_process_kill()` calls
++  // `TerminateProcess(handle, 1)` and then sets `process->exit_signal = signum`
++  // (libuv src/win/process.c), which is what surfaces as `signal`.
++  //
++  // This is exactly why the shutdown *record* is the discriminator and the exit metadata is
++  // not: a killed Windows child looks identical to a gracefully terminated POSIX one.
 +  if (process.platform !== 'win32') {
 +    t.skip('Windows termination semantics only; POSIX graceful shutdown is covered above');
 +    return;
@@ -208,8 +267,8 @@ index e056ce9..b379bc9 100644
 +    service.child.kill();
 +    const exit = await service.waitForExit();
 +
-+    assert.equal(exit.signal, null, 'Windows does not report POSIX signal metadata');
-+    assert.notEqual(exit.code, 0, 'a terminated child must not report a clean exit');
++    assert.equal(exit.code, null, 'a killed child reports no exit code');
++    assert.equal(exit.signal, 'SIGTERM', 'Node reports the requested signal, not the mechanism');
 +    assert.equal(
 +      service.lines().some((line) => line.msg === 'service.shutdown_complete'),
 +      false,
