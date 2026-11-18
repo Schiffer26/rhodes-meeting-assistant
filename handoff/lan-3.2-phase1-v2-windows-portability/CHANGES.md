@@ -11,7 +11,7 @@ touched, so no runtime contract changes and nothing about the implementation is 
 | `server/test/service-mode.test.ts` | test | new unit test: the registered `SIGTERM` handler requests a clean stop (reason `SIGTERM`, code `0`) |
 | `server/ARCHITECTURE.md` | docs | signal semantics per platform; `Ctrl+C`, the service stdin command and a programmatic kill are three distinct cases; termination is classified per platform (§13 typo fixed) |
 
-Diff (cumulative against the accepted v2 base): **4 files, +192 / −6**. No assertion was
+Diff (cumulative against the accepted v2 base): **4 files, +230 / −8**. No assertion was
 removed or loosened; every original claim still holds on the platform where it is true.
 
 > **Revision 2.** A review of the first correction found three claims wrong. They are fixed
@@ -96,15 +96,18 @@ a Windows signal, or the host terminating the Job Object". The middle item was w
 the paragraph now states:
 
 - **Interactive `Ctrl+C`** reaches the registered `SIGINT` handler on Windows too, and is a
-  graceful stop (exit `0`) for an operator at a console. It stays in the §13 checklist.
+  graceful stop for an operator at a console — exit `0` when every shutdown stage succeeds,
+  `69` when one fails. It stays in the §13 checklist.
 - **A Windows service host** has no console and receives no `SIGTERM` — `SIGTERM` "is not
   supported on Windows, it can be listened on", i.e. never received — so **the supported
   graceful stop for the host is the documented stdin command** `{"cmd":"shutdown"}`, which
   a future SCM stop request will drive.
 - **A programmatic kill is not a signal delivery.** `ChildProcess.kill('SIGINT')/('SIGTERM')`
-  and `process.kill(pid, …)` terminate unconditionally through `TerminateProcess`, with no
-  handler and no final line; for `ChildProcess.kill()` Node then reports the child as
-  terminated by the requested signal (`code: null`, `signal: 'SIGTERM'`).
+  and `process.kill(pid, …)` both terminate unconditionally through `TerminateProcess`, and
+  neither runs the target's shutdown handler. What the parent *observes* differs by API —
+  `uv_process_kill()` records the request (`code: null`, `signal: 'SIGTERM'`), `uv_kill()`
+  records nothing (`code: 1`, `signal: null`) — so exit metadata alone never decides whether
+  a shutdown was clean.
 - Termination is **not** uniformly unclean: a POSIX `SIGTERM` delivered to the handler is
   potentially graceful and is judged by the shutdown result, whereas the Windows kill
   emulation and `TerminateProcess`/`TerminateJobObject` are forceful and unclean.
@@ -171,9 +174,9 @@ on Windows]`: `ChildProcess.kill()` goes through `uv_process_kill()` and records
 `process.kill(pid, …)` goes through `uv_kill()`, which has no process handle to record on,
 so the parent sees an exit code and `signal: null`. That is why the `db-close.test.ts`
 assertion is *not* changed here — its fixture kills **itself** with
-`process.kill(process.pid, 'SIGKILL')`, which is the second path. (Its comment still says
-`signal` is "always" `null`; the statement holds for the path it uses, but the wording is
-imprecise, and tightening it was left out of scope for this commit.)
+`process.kill(process.pid, 'SIGKILL')`, which is the second path. (Its comment says
+`signal` is "always" `null`; the statement holds for the path it uses, and revision 3 makes
+the two-path distinction explicit in `ARCHITECTURE.md` rather than editing the test.)
 
 ### R2 · `ARCHITECTURE.md` §10 and §10.2 — "Node does not deliver SIGTERM or SIGINT to a Windows process"
 
@@ -182,9 +185,10 @@ imprecise, and tightening it was left out of scope for this commit.)
 **Now:** three cases, kept apart — the paragraph states, and the §10 table tabulates:
 
 1. **Interactive `Ctrl+C`** produces a console control event that Node raises as `SIGINT`;
-   the registered handler runs and the process exits `0`. Node: "`SIGINT` from the terminal
-   is supported on all platforms, and can usually be generated with `Ctrl+C`." This stays in
-   the §13 Windows verification checklist (item 6 unchanged, and item 12a now names it).
+   the registered handler runs and the process exits `0` if every stage succeeded. Node:
+   "`SIGINT` from the terminal is supported on all platforms, and can usually be generated
+   with `Ctrl+C`." This stays in the §13 Windows verification checklist (item 6 unchanged,
+   and item 12a now names it).
 2. **A Windows service host** has no console and receives no `SIGTERM` — "`SIGTERM` is not
    supported on Windows, it can be listened on", i.e. the listener never fires — so the
    **stdin command** `{"cmd":"shutdown"}` is the supported graceful stop for the host, and a
@@ -209,8 +213,8 @@ clean is untouched.
 
 `specify /child` (a mangled path introduced with item 12a) is gone; the sentence now states
 the corrected expectation — a killed child reports `code: null, signal: 'SIGTERM'` and still
-leaves no `service.shutdown_complete` line, and an interactive `Ctrl+C` produces exit `0`
-with a final line.
+leaves no `service.shutdown_complete` line, and an interactive `Ctrl+C` produces a final
+line and exit `0` — or the documented `69` when a stage failed (§10.1).
 
 ### What revision 2 does not change
 
@@ -223,6 +227,57 @@ the graceful `SIGTERM` test and Windows still runs the forced-termination test.
 > Windows host was available. They must pass there before the portability claim is accepted,
 > and if the host disagrees with the documentation, the host's output wins and the assertion
 > gets fixed again.
+
+---
+
+## Revision 3 — documentation consistency
+
+Two further inconsistencies were found by review, both documentation-only. No test, no
+`server/src/` file, no manifest, no migration and no dependency is touched by this revision.
+
+### R5 · `ARCHITECTURE.md` §10 and §10.2 — `ChildProcess.kill()` is not `process.kill(pid, …)`
+
+Revision 2 grouped the two APIs and then stated one exit shape (`code: null,
+signal: 'SIGTERM'`), while CHANGES already recorded that they take different libuv paths.
+The architecture document now separates them:
+
+| call | libuv path | parent's exit event on Windows |
+| --- | --- | --- |
+| `ChildProcess.kill(sig)` | `uv_process_kill()` → `process->exit_signal = signum` | `code: null`, `signal: <requested name>` |
+| `process.kill(pid, sig)` (including a self-kill) | `uv_kill()` — no child-process handle to record on | `TerminateProcess`'s code (normally `1`), `signal: null` |
+
+§10's trigger table gained a row per API; §10.2's third case became a two-row table with the
+libuv path named for each, plus the rule that follows from it:
+
+- both APIs terminate the target forcefully on Windows;
+- neither invokes the application's shutdown handler, so neither writes
+  `service.shutdown_complete`;
+- the reported metadata depends on the API *and* on how the parent observes the child;
+- therefore **exit metadata alone never decides whether a shutdown was clean** — the final
+  shutdown record (`ok`) and the exit code (`0` / `69` / `1`, §10.1) are the evidence.
+
+It also states why the two existing tests assert what they assert: `service-process.test.ts`
+checks the **absence of the shutdown line** (not the metadata), and `db-close.test.ts`
+self-kills with `process.kill(process.pid, 'SIGKILL')`, which is the `signal: null` path.
+**No test was changed** — no defect was found in either.
+
+### R6 · `ARCHITECTURE.md` §10, §10.2 and §13 — `Ctrl+C` and exit code `69`
+
+Revision 2's Windows text said `Ctrl+C` "exits `0`" unconditionally. A graceful request is
+not a guaranteed clean result: the handler runs and the process exits `0` **only when the
+listener close, the checkpoint, the database close and the close's own verdict all
+succeeded**; a stop that ran but failed a stage exits `69` (§10.1), and a fatal fault stays
+`1`. The §10 table, §10.2 item 1 and §13 item 6 now say so, and §13 item 6 keeps the
+graceful `Ctrl+C` check while accepting the documented `69` outcome as a failed stage rather
+than a failed `Ctrl+C` path.
+
+### R7 · `ARCHITECTURE.md` §13 — checklist numbering and item 6
+
+Item `12a` sat **before** item `12` — introduced that way in the first correction and not
+noticed until this consistency pass. It now follows item 12, and its text names the
+`uv_kill()` path so that it agrees with §10.2 instead of describing a bare `TerminateProcess`
+death. Item 12a also states both expected Windows exit shapes, and the HTTPS `Ctrl+C` step
+accepts `69` as the documented outcome of a failed stage.
 
 ---
 

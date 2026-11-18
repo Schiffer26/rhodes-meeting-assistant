@@ -1,8 +1,8 @@
 diff --git a/server/ARCHITECTURE.md b/server/ARCHITECTURE.md
-index c8d1b27..0e73abd 100644
+index c8d1b27..af8fd88 100644
 --- a/server/ARCHITECTURE.md
 +++ b/server/ARCHITECTURE.md
-@@ -846,9 +846,21 @@ can confirm which mode is running without inspecting the configuration. Neither
+@@ -846,9 +846,27 @@ can confirm which mode is running without inspecting the configuration. Neither
  contains certificate or key material — only the subject, validity window and SHA-256
  fingerprint of the certificate.
  
@@ -11,7 +11,9 @@ index c8d1b27..0e73abd 100644
 -same for both transports, and the database is closed after the listener in both.
 +Stop with `Ctrl+C` in a console, or with a `SIGTERM` delivered by the operating system on
 +POSIX. Either way the registered handler runs: the listener closes, in-flight requests
-+finish, the WAL is checkpointed, the connection closes, and a clean result exits `0`.
++finish, the WAL is checkpointed, the connection closes, and the process exits `0` **only if
++every one of those stages succeeded** — a stop that ran but failed a stage exits `69`
++(§10.1). "Graceful" describes how the stop was *requested*, not how it *ended*.
 +Shutdown is the same for both transports, and the database is closed after the listener in
 +both.
 +
@@ -20,14 +22,18 @@ index c8d1b27..0e73abd 100644
 +
 +| trigger | POSIX | Windows |
 +| --- | --- | --- |
-+| `Ctrl+C` at a console | `SIGINT` delivered → handler → graceful | `SIGINT` raised from the console control event → handler → graceful (interactive consoles only) |
-+| `SIGTERM` from the OS | delivered → handler → graceful | no such signal exists on Windows; nothing is delivered |
-+| `process.kill()` / `ChildProcess.kill()` | delivered → handler → graceful | emulated: unconditional termination reported as a signal death; **no handler runs** |
++| `Ctrl+C` at a console | `SIGINT` delivered → handler → exits `0`, or `69` if a stage failed | `SIGINT` raised from the console control event → handler → exits `0`, or `69` if a stage failed (interactive consoles only) |
++| `SIGTERM` from the OS | delivered → handler → exits `0`, or `69` if a stage failed | no such signal exists on Windows; nothing is delivered |
++| `ChildProcess.kill('SIGINT'/'SIGTERM')` | delivered → handler → exits `0`, or `69` | `TerminateProcess`: **no handler runs**; the parent is told the child died by the requested signal (`code: null`, `signal`) |
++| `process.kill(pid, …)` | delivered → handler → exits `0`, or `69` | `TerminateProcess`: **no handler runs**; nothing is recorded on the parent's handle, so the parent sees an exit code and `signal: null` |
 +| stdin control command (§10.2) | available when enabled | **the supported graceful stop for a service** |
++
++Neither Windows kill path is a shutdown, and the exit metadata cannot tell them apart from
++a real one — see §10.2 and §10.1's exit codes.
  
  ### 10.1 · What a shutdown reports, and what it exits with (phase LAN-3.2)
  
-@@ -958,9 +970,54 @@ With the flag absent, stdin is untouched: typing at a developer's terminal can n
+@@ -958,9 +976,74 @@ With the flag absent, stdin is untouched: typing at a developer's terminal can n
  the server, and `service.ready` still reports `"serviceMode":false`.
  
  There is deliberately no HTTP shutdown endpoint, no PID file, no named pipe and no helper
@@ -39,10 +45,14 @@ index c8d1b27..0e73abd 100644
 +graceful stop, and it needs a human at a console:
 +
 +1. **Interactive `Ctrl+C`.** A Windows console raises a control event, Node turns it into a
-+   `SIGINT` event, and the registered handler runs the full shutdown sequence — the process
-+   exits `0`. `SIGINT` from the terminal is the one signal Windows genuinely delivers
-+   (Node docs: "`SIGINT` from the terminal is supported on all platforms"). This is the
-+   operator path, and it is part of the Windows verification checklist.
++   `SIGINT` event, and the registered handler runs the full shutdown sequence. `SIGINT` from
++   the terminal is the one signal Windows genuinely delivers (Node docs: "`SIGINT` from the
++   terminal is supported on all platforms"). This is the operator path, and it is part of
++   the Windows verification checklist. The exit code is **not** part of what makes it
++   graceful: `0` is expected only when the listener close, the checkpoint, the database
++   close and the close's own verdict all succeeded; a stop that ran but failed a stage exits
++   `69`, which is the documented contract, not a defect (§10.1). Read the final
++   `service.shutdown_complete` line, not the fact that a `Ctrl+C` was pressed.
 +2. **Windows service host.** A service has no console to press `Ctrl+C` on, and Windows
 +   delivers no `SIGTERM` — "`SIGTERM` is not supported on Windows, it can be listened on",
 +   which is to say it is never received. **The supportable graceful stop for the host is the
@@ -54,14 +64,30 @@ index c8d1b27..0e73abd 100644
 +   $writer.WriteLine('{"cmd":"shutdown"}')
 +   ```
 +
-+3. **Programmatic kill.** `ChildProcess.kill('SIGINT')` and `ChildProcess.kill('SIGTERM')`
-+   (and `process.kill(pid, …)`) do **not** deliver a signal on Windows. Node emulates the
-+   request with `TerminateProcess` and then reports the child as terminated by that signal —
-+   "afterwards, subprocess will report that the process was terminated by signal" — so the
-+   exit event reads `code: null, signal: 'SIGTERM'` even though **no handler ran and no
-+   final line was written**. That report is indistinguishable from a graceful POSIX death if
-+   you look only at `signal`, which is why the Windows regression test asserts the *absence
-+   of `service.shutdown_complete`* rather than the exit metadata.
++3. **Programmatic kill.** No kill API delivers a signal on Windows. Both end the target
++   through `TerminateProcess`, and neither runs the target's shutdown handler, so neither
++   writes a `service.shutdown_complete` line. What the *parent* then observes depends on
++   which API was used, and the two are easy to conflate:
++
++   | call | libuv path | what the parent's exit event reports |
++   | --- | --- | --- |
++   | `ChildProcess.kill(sig)` — the parent kills a child it spawned | `uv_process_kill()`, which records the request on the child-process handle: `process->exit_signal = signum` | `code: null`, `signal: <the requested name>` — e.g. `SIGTERM` |
++   | `process.kill(pid, sig)` — a signal sent to a pid, which may be the process itself | `uv_kill()`, which has no child-process handle to record on | the code `TerminateProcess` set (normally `1`), and `signal: null` |
++
++   Node's documentation describes the first shape ("afterwards, `subprocess` will report
++   that the process was terminated by signal"); the second shape is what a parent sees when
++   the fixture kills **itself** with `process.kill(process.pid, 'SIGKILL')`, which is exactly
++   why `db-close.test.ts` expects `signal: null` with a non-zero code on Windows.
++
++   The consequence governs how every Windows result in this document is read: the **same
++   forceful mechanism** can surface as `code: null, signal: 'SIGTERM'` *or* as
++   `code: 1, signal: null`, and a genuinely graceful POSIX `SIGTERM` produces the first
++   shape as well. **Exit metadata alone never decides whether a shutdown was clean.** The
++   evidence is the shutdown *record* — the presence of a final `service.shutdown_complete`
++   line, its `ok` field, and the process exit code (`0` clean, `69` a failed stage, `1`
++   fatal; §10.1). The Windows regression test in `service-process.test.ts` therefore asserts
++   the **absence of that line**, not the exit metadata, and the `db-close.test.ts` assertion
++   says nothing about cleanliness — only that no shutdown code ran.
 +
 +Termination is therefore **not** uniformly unclean, and the difference decides how a result
 +may be read:
@@ -70,8 +96,8 @@ index c8d1b27..0e73abd 100644
 +  whole sequence; whether the stop was clean is decided by the result itself (exit `0`, a
 +  final `service.shutdown_complete` with `ok: true`), not by the fact that a signal started
 +  it.
-+- **Windows, Node's `ChildProcess.kill()` emulation** — forceful and unclean: no handler, no
-+  final line, whatever the exit metadata says.
++- **Windows, Node's kill emulation — `ChildProcess.kill()` and `process.kill(pid, …)`** —
++  forceful and unclean: no handler, no final line, whatever the exit metadata says.
 +- **Windows, `TerminateProcess` / `TerminateJobObject`** — forceful and unclean, and the
 +  deadline backstop for a service host. A Job Object that had to be terminated never
 +  produced a clean stop.
@@ -83,23 +109,50 @@ index c8d1b27..0e73abd 100644
  Run the service on the host, not from a mapped drive or a network path — the working
  directory and the data directory must both be local.
  
-@@ -1048,6 +1105,16 @@ office, verify on the actual Windows host:
-     denies the service account (for example `icacls D:\RHODES-denied /deny "SERVICE
-     ACCOUNT:(OI)(CI)(F)"`), point `RHODES_DATA_DIR` inside it, and confirm the service
-     exits with `config.data_dir_unresolvable` and creates nothing.
-+12a. **Signal and termination semantics (found in the first Windows run).** Two Phase 1
-+    tests encoded POSIX assumptions. They are now platform-aware rather than skipped —
-+    `db-close.test.ts` accepts an exit code and a `null` signal for a `TerminateProcess`
-+    death, and the `SIGTERM` graceful-shutdown test is POSIX-only, with a Windows test
-+    asserting that a forced termination produces no `service.shutdown_complete` line. The
-+    correction has been verified only on Linux (one test skipped there by design); confirm
-+    on the host that the Windows branch of each test runs and passes: a killed child must
-+    report `code: null, signal: 'SIGTERM'` and still leave no `service.shutdown_complete`
-+    line, and an interactive `Ctrl+C` must produce exit `0` with a final line.
-+
+@@ -1025,7 +1108,10 @@ office, verify on the actual Windows host:
+ 3. `Get-NetTCPConnection -LocalPort 4317` shows `127.0.0.1` only, never `0.0.0.0`.
+ 4. A second machine cannot reach `http://<host>:4317/api/health` (expected: refused).
+ 5. Setting `RHODES_DATA_DIR` to a UNC path or to `%OneDrive%` is refused at startup.
+-6. `Ctrl+C` exits cleanly and leaves no `-wal` file behind; a restart keeps records.
++6. `Ctrl+C` stops the process through the handler and leaves no `-wal` file behind; a
++   restart keeps records. Exit `0` when every stage succeeds; exit `69` with a final
++   line whose `ok` is `false` is the documented outcome of a failed stage, not a
++   failure of the `Ctrl+C` path.
+ 7. Task Scheduler / service wrapper behaviour: automatic restart, log capture, and
+    correct exit codes on configuration failure.
+ 8. **Junction tests (LAN-1.1, not yet run on Windows).** `mklink /J C:\RHODES-data
+@@ -1051,6 +1137,21 @@ office, verify on the actual Windows host:
  12. **REPLACE protection on Windows.** `PRAGMA recursive_triggers` is a connection-level
      SQLite setting, identical on every platform, but the `INSERT OR REPLACE` refusal has
      only been demonstrated on Linux.
++12a. **Signal and termination semantics (found in the first Windows run).** Two Phase 1
++    tests encoded POSIX assumptions. They are now platform-aware rather than skipped —
++    `db-close.test.ts` — whose fixture kills itself with `process.kill(process.pid,
++    'SIGKILL')`, the `uv_kill()` path of §10.2 — accepts an exit code and a `null` signal
++    for that `TerminateProcess` death, and the `SIGTERM` graceful-shutdown test is
++    POSIX-only, with a Windows test asserting that `ChildProcess.kill()` produces no
++    `service.shutdown_complete` line. The
++    correction has been verified only on Linux (one test skipped there by design); confirm
++    on the host that the Windows branch of each test runs and passes: a child killed with
++    `ChildProcess.kill()` must report `code: null, signal: 'SIGTERM'`, a child that kills
++    itself with `process.kill(process.pid, …)` must report `signal: null` with a non-zero
++    code, and neither may leave a `service.shutdown_complete` line. An interactive `Ctrl+C`
++    must produce a final line with `ok: true` and exit `0`, or exit `69` with `ok: false`
++    if a stage failed.
++
+ 13. **Hidden password entry (LAN-2, not yet run on Windows).** `npm run
+     server:admin:bootstrap` must hide typing in `cmd.exe` and in Windows Terminal, and
+     must refuse when stdin is redirected. The automated tests prove the *refusal* path on
+@@ -1105,6 +1206,8 @@ office, verify on the actual Windows host:
+        `config.tls_*` code, and must **not** create `%ProgramData%\RHODES\data` on a
+        first run. Never fall back to HTTP.
+     g. `Ctrl+C` with HTTPS enabled exits `0`, leaves no `-wal` file, and the process is
+-       gone (`Get-Process node`).
++       gone (`Get-Process node`). A `69` instead means a shutdown stage failed and the
++       final line says which (§10.1) — that is the contract reporting itself, not a
++       different `Ctrl+C` behaviour.
+     h. Import the certificate into `Cert:\LocalMachine\Root` only when a later phase
+        explicitly authorises client trust; installing it is not part of this phase.
 diff --git a/server/test/db-close.test.ts b/server/test/db-close.test.ts
 index b27f69a..7f1136f 100644
 --- a/server/test/db-close.test.ts
