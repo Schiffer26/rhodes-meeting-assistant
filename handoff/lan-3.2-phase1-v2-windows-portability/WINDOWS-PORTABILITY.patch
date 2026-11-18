@@ -1,0 +1,220 @@
+diff --git a/server/ARCHITECTURE.md b/server/ARCHITECTURE.md
+index c8d1b27..ffe3c65 100644
+--- a/server/ARCHITECTURE.md
++++ b/server/ARCHITECTURE.md
+@@ -958,9 +958,28 @@ With the flag absent, stdin is untouched: typing at a developer's terminal can n
+ the server, and `service.ready` still reports `"serviceMode":false`.
+ 
+ There is deliberately no HTTP shutdown endpoint, no PID file, no named pipe and no helper
+-process: the only way to stop the service is the channel above, a Windows signal, or the
++process: the only ways to stop the service are the channel above, a POSIX signal, or the
+ host terminating the Job Object (which is recorded as unclean).
+ 
++**Windows has no POSIX signals.** Node does not deliver `SIGTERM` or `SIGINT` to a Windows
++process, and `ChildProcess.kill('SIGTERM')` (or `.kill()`) ends it through
++`TerminateProcess`: no handler runs, no final line is written, and no exit code `0` is
++reported. A graceful Windows stop therefore has exactly one supported trigger — the stdin
++command documented above:
++
++```powershell
++# graceful: the child runs its shutdown sequence and writes service.shutdown_complete
++$writer.WriteLine('{"cmd":"shutdown"}')
++```
++
++When the .NET service host exists, an SCM stop request will drive this same command; it
++must never fall back to terminating the child as a normal stop. Termination —
++`ChildProcess.kill()`, `TerminateProcess`, or `TerminateJobObject` — is classified
++**unclean** on every platform: it is the last resort when the deadline expires, not a
++shutdown mechanism. A clean Windows stop is the stdin command **and** exit code `0`
++**and** a final `service.shutdown_complete` line with `ok: true` **and** an empty Job
++Object.
++
+ Run the service on the host, not from a mapped drive or a network path — the working
+ directory and the data directory must both be local.
+ 
+@@ -1048,6 +1067,15 @@ office, verify on the actual Windows host:
+     denies the service account (for example `icacls D:\RHODES-denied /deny "SERVICE
+     ACCOUNT:(OI)(CI)(F)"`), point `RHODES_DATA_DIR` inside it, and confirm the service
+     exits with `config.data_dir_unresolvable` and creates nothing.
++12a. **Signal and termination semantics (found in the first Windows run).** Two Phase 1
++    tests encoded POSIX assumptions. They are now platform-aware rather than skipped —
++    `db-close.test.ts` accepts an exit code and a `null` signal for a `TerminateProcess`
++    death, and the `SIGTERM` graceful-shutdown test is POSIX-only, with a Windows test
++    asserting that a forced termination produces no `service.shutdown_complete` line. The
++    correction has been verified only on Linux (one test skipped there by design); confirm
++    on the host that the Windows branch of each test runs and passes, and that a
++    `specify /child` or SCM stop path never produces a `0` exit code by termination.
++
+ 12. **REPLACE protection on Windows.** `PRAGMA recursive_triggers` is a connection-level
+     SQLite setting, identical on every platform, but the `INSERT OR REPLACE` refusal has
+     only been demonstrated on Linux.
+diff --git a/server/test/db-close.test.ts b/server/test/db-close.test.ts
+index b27f69a..7f1136f 100644
+--- a/server/test/db-close.test.ts
++++ b/server/test/db-close.test.ts
+@@ -354,6 +354,26 @@ async function runCrashChild(dataDir: string): Promise<{ signal: string | null;
+   return exited;
+ }
+ 
++/**
++ * The child must die *unclean* — no shutdown code ran — but the evidence differs by platform.
++ *
++ * POSIX reports the fatal signal and no exit code (`signal: 'SIGKILL'`, `code: null`).
++ * Windows has no POSIX signals: `process.kill(pid, 'SIGKILL')` becomes `TerminateProcess`,
++ * so Node reports an exit code and `signal` is always `null`. Asserting the signal there
++ * tests the platform's signal plumbing, not our recovery path, and it fails before the WAL
++ * assertions below are ever reached — which is exactly what happened in the first Windows
++ * run. The recovery assertions themselves are platform-independent and run everywhere.
++ */
++function assertUncleanTermination(exit: { signal: string | null; code: number | null }): void {
++  if (process.platform === 'win32') {
++    assert.equal(exit.signal, null, 'Windows does not report POSIX signal metadata');
++    assert.notEqual(exit.code, 0, 'an abruptly terminated child must not report a clean exit');
++    return;
++  }
++  assert.equal(exit.signal, 'SIGKILL', 'the fixture must die unclean, not shut down');
++  assert.equal(exit.code, null, 'a signal-terminated child reports no exit code');
++}
++
+ test('integration: rows committed before an abrupt death survive the reopen', async () => {
+   const dir = tempDataDir();
+   try {
+@@ -361,7 +381,7 @@ test('integration: rows committed before an abrupt death survive the reopen', as
+     migratedConfig(dir);
+ 
+     const exit = await runCrashChild(dir);
+-    assert.equal(exit.signal, 'SIGKILL', 'the fixture must die unclean, not shut down');
++    assertUncleanTermination(exit);
+ 
+     // The dead process left its WAL behind; we neither deleted it nor replayed it by hand.
+     assert.equal(existsSync(path.join(dir, 'rhodes.db-wal')), true, 'the WAL of the dead process is preserved');
+diff --git a/server/test/service-mode.test.ts b/server/test/service-mode.test.ts
+index 9dd6249..f692507 100644
+--- a/server/test/service-mode.test.ts
++++ b/server/test/service-mode.test.ts
+@@ -337,6 +337,40 @@ test('without service mode the wiring still announces readiness and ignores stdi
+   assert.equal(emitter.listenerCount('SIGINT'), 1, 'signal handling is independent of service mode');
+ });
+ 
++test('the registered SIGTERM handler requests a clean shutdown with code 0', async () => {
++  // Signal *delivery* is a platform matter — Windows has no POSIX signals at all — but the
++  // handler's contract is ours and must hold on every platform: one registration, reason
++  // `SIGTERM`, requested exit code 0. That is what a Windows service host (or a future SCM
++  // integration) relies on when it asks for a graceful stop.
++  const emitter = new EventEmitter();
++  const stdin = new PassThrough();
++  const stops: Array<[string, number]> = [];
++
++  const logs = await captureLogs(() => {
++    wireLifecycle({
++      runtime: FAKE_RUNTIME,
++      stdin,
++      emitter,
++      stop: (reason, code) => stops.push([reason, code]),
++      env: DISABLED,
++    });
++  });
++
++  assert.equal(emitter.listenerCount('SIGTERM'), 1, 'exactly one SIGTERM handler');
++  emitter.emit('SIGTERM');
++  await flush();
++
++  assert.deepEqual(stops, [['SIGTERM', 0]], 'a clean stop, not a fatal one');
++  assert.equal(occurrences(logs, 'service.ready'), 1);
++
++  // A repeated signal does not start a second sequence at this layer; the process-level
++  // `stop()` guard handles that, and the unit test pins only the wiring.
++  emitter.emit('SIGTERM');
++  await flush();
++  assert.equal(stops.length, 2, 'the handler is called again; de-duplication lives in index.ts');
++  assert.deepEqual(stops[1], ['SIGTERM', 0]);
++});
++
+ test('an uncaught exception is logged and stops with the fatal code', async () => {
+   const emitter = new EventEmitter();
+   const stdin = new PassThrough();
+diff --git a/server/test/service-process.test.ts b/server/test/service-process.test.ts
+index e056ce9..b379bc9 100644
+--- a/server/test/service-process.test.ts
++++ b/server/test/service-process.test.ts
+@@ -221,7 +221,7 @@ test('a control channel that disappears shuts the service down instead of orphan
+   }
+ });
+ 
+-test('without service mode a terminal is not a shutdown button, and SIGTERM still works', async () => {
++test('without service mode a terminal is not a shutdown button', async () => {
+   const dir = tempDataDir();
+   const service = startProcess(dir);
+   try {
+@@ -238,6 +238,32 @@ test('without service mode a terminal is not a shutdown button, and SIGTERM stil
+       service.lines().some((line) => line.msg === 'service.control_received'),
+       false,
+     );
++    assert.equal(
++      service.lines().some((line) => line.msg === 'service.shutdown_complete'),
++      false,
++      'an ignored command must not produce a shutdown record either',
++    );
++  } finally {
++    await stopChild(service.child);
++    removeDir(dir);
++  }
++});
++
++test('SIGTERM is a graceful shutdown on POSIX', async (t) => {
++  // Windows has no POSIX signal delivery: `ChildProcess.kill('SIGTERM')` calls
++  // TerminateProcess there, so the child cannot run its handler, cannot flush the final
++  // line and cannot report exit code 0. The Windows path is covered by the forced
++  // termination test below and by the lifecycle unit test that drives the SIGTERM handler
++  // directly; claiming a graceful Windows shutdown from this test would be false.
++  if (process.platform === 'win32') {
++    t.skip('POSIX signal delivery only; Windows termination is covered by the next test');
++    return;
++  }
++
++  const dir = tempDataDir();
++  const service = startProcess(dir);
++  try {
++    await service.waitForMessage('service.ready');
+ 
+     service.child.kill('SIGTERM');
+     const exit = await service.waitForExit();
+@@ -246,6 +272,38 @@ test('without service mode a terminal is not a shutdown button, and SIGTERM stil
+     const final = service.lines().find((line) => line.msg === 'service.shutdown_complete');
+     assert.equal(final?.reason, 'SIGTERM');
+     assert.equal(final?.ok, true);
++    assert.equal(final?.exitCode, 0);
++  } finally {
++    await stopChild(service.child);
++    removeDir(dir);
++  }
++});
++
++test('a forced termination on Windows is not a graceful shutdown', async (t) => {
++  // The mirror image of the test above: on Windows `kill()` terminates the process through
++  // TerminateProcess. Nothing runs afterwards, so the process must NOT produce a shutdown
++  // record — and the handoff documentation classifies this as an unclean stop, which is
++  // what a Job Object termination looks like too.
++  if (process.platform !== 'win32') {
++    t.skip('Windows termination semantics only; POSIX graceful shutdown is covered above');
++    return;
++  }
++
++  const dir = tempDataDir();
++  const service = startProcess(dir);
++  try {
++    await service.waitForMessage('service.ready');
++
++    service.child.kill();
++    const exit = await service.waitForExit();
++
++    assert.equal(exit.signal, null, 'Windows does not report POSIX signal metadata');
++    assert.notEqual(exit.code, 0, 'a terminated child must not report a clean exit');
++    assert.equal(
++      service.lines().some((line) => line.msg === 'service.shutdown_complete'),
++      false,
++      'a forced termination must not be recorded as a shutdown',
++    );
+   } finally {
+     await stopChild(service.child);
+     removeDir(dir);
