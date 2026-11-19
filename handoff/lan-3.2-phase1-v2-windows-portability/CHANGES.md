@@ -11,7 +11,7 @@ touched, so no runtime contract changes and nothing about the implementation is 
 | `server/test/service-mode.test.ts` | test | new unit test: the registered `SIGTERM` handler requests a clean stop (reason `SIGTERM`, code `0`) |
 | `server/ARCHITECTURE.md` | docs | signal semantics per platform; `Ctrl+C`, the service stdin command and a programmatic kill are three distinct cases; termination is classified per platform (§13 typo fixed) |
 
-Diff (cumulative against the accepted v2 base): **4 files, +230 / −8**. No assertion was
+Diff (cumulative against the accepted v2 base): **4 files, +231 / −8**. No assertion was
 removed or loosened; every original claim still holds on the platform where it is true.
 
 > **Revision 2.** A review of the first correction found three claims wrong. They are fixed
@@ -257,9 +257,12 @@ libuv path named for each, plus the rule that follows from it:
   shutdown record (`ok`) and the exit code (`0` / `69` / `1`, §10.1) are the evidence.
 
 It also states why the two existing tests assert what they assert: `service-process.test.ts`
-checks the **absence of the shutdown line** (not the metadata), and `db-close.test.ts`
-self-kills with `process.kill(process.pid, 'SIGKILL')`, which is the `signal: null` path.
-**No test was changed** — no defect was found in either.
+checks **both** the expected exit metadata (`code: null`, `signal: 'SIGTERM'`) **and** the
+absence of the shutdown line, and `db-close.test.ts` self-kills with
+`process.kill(process.pid, 'SIGKILL')`, which is the `signal: null` path.
+**No test was changed** — no defect was found in either. (The "absence of the line, not the
+exit metadata" phrasing used in revision 3 was itself inaccurate and is corrected in
+revision 4, below.)
 
 ### R6 · `ARCHITECTURE.md` §10, §10.2 and §13 — `Ctrl+C` and exit code `69`
 
@@ -278,6 +281,36 @@ noticed until this consistency pass. It now follows item 12, and its text names 
 `uv_kill()` path so that it agrees with §10.2 instead of describing a bare `TerminateProcess`
 death. Item 12a also states both expected Windows exit shapes, and the HTTPS `Ctrl+C` step
 accepts `69` as the documented outcome of a failed stage.
+
+---
+
+## Revision 4 — final wording correction (§10.2)
+
+Documentation only: one sentence in `ARCHITECTURE.md` §10.2, plus this note. No test, no
+`server/src/` file, no manifest, no migration and no dependency is touched.
+
+**Was:** "The Windows regression test in `service-process.test.ts` therefore asserts the
+**absence of that line**, not the exit metadata …". That understated the test, which asserts
+all three things:
+
+```ts
+assert.equal(exit.code, null, 'a killed child reports no exit code');
+assert.equal(exit.signal, 'SIGTERM', 'Node reports the requested signal, not the mechanism');
+assert.equal(
+  service.lines().some((line) => line.msg === 'service.shutdown_complete'),
+  false,
+  'a forced termination must not be recorded as a shutdown',
+);
+```
+
+**Now:** the document states that the test checks both the expected exit metadata and the
+absence of that line, and that the **shutdown record — not exit metadata alone — is the
+cleanliness discriminator**; the `db-close.test.ts` assertion still says nothing about
+cleanliness, only that no shutdown code ran. The rule itself is unchanged from revision 3;
+only the description of the evidence changed, so the two statements no longer contradict each
+other.
+
+The same phrasing appeared once in this document (§R5) and has been corrected there too.
 
 ---
 

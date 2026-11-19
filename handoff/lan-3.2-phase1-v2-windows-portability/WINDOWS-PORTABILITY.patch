@@ -1,5 +1,5 @@
 diff --git a/server/ARCHITECTURE.md b/server/ARCHITECTURE.md
-index c8d1b27..af8fd88 100644
+index c8d1b27..8c973f4 100644
 --- a/server/ARCHITECTURE.md
 +++ b/server/ARCHITECTURE.md
 @@ -846,9 +846,27 @@ can confirm which mode is running without inspecting the configuration. Neither
@@ -33,7 +33,7 @@ index c8d1b27..af8fd88 100644
  
  ### 10.1 · What a shutdown reports, and what it exits with (phase LAN-3.2)
  
-@@ -958,9 +976,74 @@ With the flag absent, stdin is untouched: typing at a developer's terminal can n
+@@ -958,9 +976,75 @@ With the flag absent, stdin is untouched: typing at a developer's terminal can n
  the server, and `service.ready` still reports `"serviceMode":false`.
  
  There is deliberately no HTTP shutdown endpoint, no PID file, no named pipe and no helper
@@ -85,9 +85,10 @@ index c8d1b27..af8fd88 100644
 +   shape as well. **Exit metadata alone never decides whether a shutdown was clean.** The
 +   evidence is the shutdown *record* — the presence of a final `service.shutdown_complete`
 +   line, its `ok` field, and the process exit code (`0` clean, `69` a failed stage, `1`
-+   fatal; §10.1). The Windows regression test in `service-process.test.ts` therefore asserts
-+   the **absence of that line**, not the exit metadata, and the `db-close.test.ts` assertion
-+   says nothing about cleanliness — only that no shutdown code ran.
++   fatal; §10.1). The Windows regression test in `service-process.test.ts` checks both the
++   expected exit metadata and the absence of that line; the shutdown record, not exit
++   metadata alone, is the cleanliness discriminator. The `db-close.test.ts` assertion says
++   nothing about cleanliness — only that no shutdown code ran.
 +
 +Termination is therefore **not** uniformly unclean, and the difference decides how a result
 +may be read:
@@ -109,7 +110,7 @@ index c8d1b27..af8fd88 100644
  Run the service on the host, not from a mapped drive or a network path — the working
  directory and the data directory must both be local.
  
-@@ -1025,7 +1108,10 @@ office, verify on the actual Windows host:
+@@ -1025,7 +1109,10 @@ office, verify on the actual Windows host:
  3. `Get-NetTCPConnection -LocalPort 4317` shows `127.0.0.1` only, never `0.0.0.0`.
  4. A second machine cannot reach `http://<host>:4317/api/health` (expected: refused).
  5. Setting `RHODES_DATA_DIR` to a UNC path or to `%OneDrive%` is refused at startup.
@@ -121,7 +122,7 @@ index c8d1b27..af8fd88 100644
  7. Task Scheduler / service wrapper behaviour: automatic restart, log capture, and
     correct exit codes on configuration failure.
  8. **Junction tests (LAN-1.1, not yet run on Windows).** `mklink /J C:\RHODES-data
-@@ -1051,6 +1137,21 @@ office, verify on the actual Windows host:
+@@ -1051,6 +1138,21 @@ office, verify on the actual Windows host:
  12. **REPLACE protection on Windows.** `PRAGMA recursive_triggers` is a connection-level
      SQLite setting, identical on every platform, but the `INSERT OR REPLACE` refusal has
      only been demonstrated on Linux.
@@ -143,7 +144,7 @@ index c8d1b27..af8fd88 100644
  13. **Hidden password entry (LAN-2, not yet run on Windows).** `npm run
      server:admin:bootstrap` must hide typing in `cmd.exe` and in Windows Terminal, and
      must refuse when stdin is redirected. The automated tests prove the *refusal* path on
-@@ -1105,6 +1206,8 @@ office, verify on the actual Windows host:
+@@ -1105,6 +1207,8 @@ office, verify on the actual Windows host:
         `config.tls_*` code, and must **not** create `%ProgramData%\RHODES\data` on a
         first run. Never fall back to HTTP.
      g. `Ctrl+C` with HTTPS enabled exits `0`, leaves no `-wal` file, and the process is

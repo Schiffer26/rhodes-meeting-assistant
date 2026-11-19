@@ -1023,9 +1023,10 @@ graceful stop, and it needs a human at a console:
    shape as well. **Exit metadata alone never decides whether a shutdown was clean.** The
    evidence is the shutdown *record* — the presence of a final `service.shutdown_complete`
    line, its `ok` field, and the process exit code (`0` clean, `69` a failed stage, `1`
-   fatal; §10.1). The Windows regression test in `service-process.test.ts` therefore asserts
-   the **absence of that line**, not the exit metadata, and the `db-close.test.ts` assertion
-   says nothing about cleanliness — only that no shutdown code ran.
+   fatal; §10.1). The Windows regression test in `service-process.test.ts` checks both the
+   expected exit metadata and the absence of that line; the shutdown record, not exit
+   metadata alone, is the cleanliness discriminator. The `db-close.test.ts` assertion says
+   nothing about cleanliness — only that no shutdown code ran.
 
 Termination is therefore **not** uniformly unclean, and the difference decides how a result
 may be read:
