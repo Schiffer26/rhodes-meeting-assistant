@@ -11,7 +11,7 @@ touched, so no runtime contract changes and nothing about the implementation is 
 | `server/test/service-mode.test.ts` | test | new unit test: the registered `SIGTERM` handler requests a clean stop (reason `SIGTERM`, code `0`) |
 | `server/ARCHITECTURE.md` | docs | signal semantics per platform; `Ctrl+C`, the service stdin command and a programmatic kill are three distinct cases; termination is classified per platform (§13 typo fixed) |
 
-Diff (cumulative against the accepted v2 base): **4 files, +231 / −8**. No assertion was
+Diff (cumulative against the accepted v2 base): **4 files, +247 / −8**. No assertion was
 removed or loosened; every original claim still holds on the platform where it is true.
 
 > **Revision 2.** A review of the first correction found three claims wrong. They are fixed
@@ -47,6 +47,9 @@ function assertUncleanTermination(exit: { signal: string | null; code: number | 
 | platform | asserted |
 | --- | --- |
 | POSIX | `signal === 'SIGKILL'` **and** `code === null` (the second assertion is new and stricter) |
+
+The graceful-shutdown POSIX test additionally asserts `signal === null` with `code === 0`
+(revision 5): a handled `SIGTERM` completes through a normal process exit.
 | Windows | `signal === null` **and** `code !== 0` (a terminated child is never a clean exit) |
 
 **Not skipped.** The abrupt-termination fixture, the WAL-preservation assertion, the
@@ -102,6 +105,9 @@ the paragraph now states:
   supported on Windows, it can be listened on", i.e. never received — so **the supported
   graceful stop for the host is the documented stdin command** `{"cmd":"shutdown"}`, which
   a future SCM stop request will drive.
+- **A handled POSIX `SIGTERM` ends in a normal exit**, not a signal death: Node removes its
+  terminate-on-signal default when a listener exists, so the parent sees `signal: null` with
+  the code the handler chose (`0`, `69` or `1`).
 - **A programmatic kill is not a signal delivery.** `ChildProcess.kill('SIGINT')/('SIGTERM')`
   and `process.kill(pid, …)` both terminate unconditionally through `TerminateProcess`, and
   neither runs the target's shutdown handler. What the parent *observes* differs by API —
@@ -311,6 +317,67 @@ only the description of the evidence changed, so the two statements no longer co
 other.
 
 The same phrasing appeared once in this document (§R5) and has been corrected there too.
+
+---
+
+## Revision 5 — a handled signal is not a signal death
+
+Documentation plus one POSIX test assertion. No `server/src/` file, no manifest, no
+migration and no dependency is touched, and the Windows test's assertions are unchanged
+(only its comment).
+
+### R8 · `ARCHITECTURE.md` §10.2 — "a genuinely graceful POSIX SIGTERM produces the first shape"
+
+**Was:** the document said a graceful POSIX `SIGTERM` produces the Windows forced-termination
+shape, `code: null, signal: 'SIGTERM'`. That is wrong. On POSIX, installing a listener
+removes Node's default terminate-on-signal behaviour ("`SIGTERM` and `SIGINT` have default
+handlers on non-Windows platforms … if one of these signals has a listener installed, its
+default behavior will be removed"), so the handler runs, the process calls
+`process.exit(...)`, and the kernel reports a **normal exit**: `signal: null` with the code
+the handler chose.
+
+The expected RHODES results are therefore:
+
+| outcome | exit metadata |
+| --- | --- |
+| clean shutdown | `code: 0, signal: null` |
+| shutdown ran but a stage failed | `code: 69, signal: null` |
+| fatal fault | `code: 1, signal: null` |
+| Windows `ChildProcess.kill('SIGTERM')` (forced) | `code: null, signal: 'SIGTERM'` |
+| Windows `process.kill(process.pid, 'SIGKILL')` self-kill (forced) | non-zero `code`, `signal: null` |
+
+§10.2 now says exactly that, and the §10.2 classification bullet for POSIX names the normal
+exit.
+
+### R9 · `ARCHITECTURE.md` §10 — the footnote under the trigger table
+
+**Was:** "Neither Windows kill path is a shutdown, and the exit metadata cannot tell them
+apart from a real one."
+
+**Now:** neither Windows kill operation invokes the shutdown handler; the shape a kill
+reports depends on the API (`code: null, signal: <name>` for `ChildProcess.kill()`;
+`signal: null` with an ordinary non-zero code for `process.kill()` or `TerminateProcess`);
+a POSIX `SIGTERM` that reaches the handler ends in a normal exit with `signal: null` and code
+`0`/`69`/`1`; and exit metadata alone is not proof that the shutdown stages ran — the
+`service.shutdown_complete` record is.
+
+### R10 · `service-process.test.ts` — Windows comment and a POSIX assertion
+
+- The Windows forced-termination test's comment no longer claims a killed Windows child
+  "looks identical to a gracefully terminated POSIX one". It now records that the metadata
+  **differs** — Windows reports a signal, a handled POSIX `SIGTERM` reports `signal: null`
+  with the handler's code — and that the final `service.shutdown_complete` record is what
+  proves the shutdown sequence ran.
+- The POSIX test `SIGTERM is a graceful shutdown on POSIX` gains, immediately after the exit
+  event:
+
+  ```ts
+  assert.equal(exit.signal, null, 'a handled SIGTERM completes through a normal process exit');
+  ```
+
+  The existing `exit.code === 0` assertion and every shutdown-record assertion
+  (`reason: 'SIGTERM'`, `ok: true`, `exitCode: 0`) are retained. **This assertion runs on
+  Linux and passes there** — it is the one part of this work that is not Windows-only.
 
 ---
 

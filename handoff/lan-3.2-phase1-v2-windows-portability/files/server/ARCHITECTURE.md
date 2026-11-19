@@ -865,8 +865,15 @@ how a "graceful shutdown" claim goes wrong on Windows:
 | `process.kill(pid, …)` | delivered → handler → exits `0`, or `69` | `TerminateProcess`: **no handler runs**; nothing is recorded on the parent's handle, so the parent sees an exit code and `signal: null` |
 | stdin control command (§10.2) | available when enabled | **the supported graceful stop for a service** |
 
-Neither Windows kill path is a shutdown, and the exit metadata cannot tell them apart from
-a real one — see §10.2 and §10.1's exit codes.
+Neither Windows kill operation invokes RHODES's shutdown handler, so neither is a shutdown,
+and the metadata they report is not comparable with a handled signal. Which shape a kill
+produces depends on the API (`code: null, signal: <name>` for `ChildProcess.kill()`;
+`signal: null` with an ordinary non-zero code for `process.kill()` or `TerminateProcess`,
+§10.2). A POSIX `SIGTERM` that reaches the handler is a different case entirely: Node removes
+its terminate-on-signal default once a listener exists, the process finishes through a normal
+exit, and the parent sees `signal: null` with code `0`, `69` or `1`. Exit metadata alone is
+therefore not proof that the shutdown stages ran — the `service.shutdown_complete` record is
+(§10.1, §10.2).
 
 ### 10.1 · What a shutdown reports, and what it exits with (phase LAN-3.2)
 
@@ -1017,24 +1024,28 @@ graceful stop, and it needs a human at a console:
    the fixture kills **itself** with `process.kill(process.pid, 'SIGKILL')`, which is exactly
    why `db-close.test.ts` expects `signal: null` with a non-zero code on Windows.
 
-   The consequence governs how every Windows result in this document is read: the **same
-   forceful mechanism** can surface as `code: null, signal: 'SIGTERM'` *or* as
-   `code: 1, signal: null`, and a genuinely graceful POSIX `SIGTERM` produces the first
-   shape as well. **Exit metadata alone never decides whether a shutdown was clean.** The
-   evidence is the shutdown *record* — the presence of a final `service.shutdown_complete`
-   line, its `ok` field, and the process exit code (`0` clean, `69` a failed stage, `1`
-   fatal; §10.1). The Windows regression test in `service-process.test.ts` checks both the
-   expected exit metadata and the absence of that line; the shutdown record, not exit
-   metadata alone, is the cleanliness discriminator. The `db-close.test.ts` assertion says
-   nothing about cleanliness — only that no shutdown code ran.
+   The consequence governs how every result in this document is read. Both shapes above
+   describe **forced** termination; neither is what a handled signal produces. A POSIX
+   `SIGTERM` that reaches RHODES's registered handler is not a signal death at all: Node
+   removes its default terminate-on-signal behaviour as soon as a listener exists, the
+   handler runs the shutdown sequence, and the process ends through a **normal exit**, so the
+   parent observes `signal: null` together with the applicable code — `0` for a clean
+   shutdown, `69` when a stage failed, `1` for a fatal fault (§10.1). **Exit metadata alone
+   never decides whether a shutdown was clean.** The evidence is the shutdown *record* — the
+   presence of a final `service.shutdown_complete` line, its `ok` field, and the process exit
+   code. The Windows regression test in `service-process.test.ts` checks both the expected
+   exit metadata and the absence of that line; the shutdown record, not exit metadata alone,
+   is the cleanliness discriminator. The `db-close.test.ts` assertion says nothing about
+   cleanliness — only that no shutdown code ran.
 
 Termination is therefore **not** uniformly unclean, and the difference decides how a result
 may be read:
 
 - **POSIX `SIGTERM` delivered to the handler** — potentially graceful. The handler runs the
-  whole sequence; whether the stop was clean is decided by the result itself (exit `0`, a
-  final `service.shutdown_complete` with `ok: true`), not by the fact that a signal started
-  it.
+  whole sequence and the process then exits normally, so the parent sees `signal: null` and
+  the code the handler chose (`0`, `69` or `1`); whether the stop was clean is decided by the
+  result itself (exit `0`, a final `service.shutdown_complete` with `ok: true`), not by the
+  fact that a signal started it.
 - **Windows, Node's kill emulation — `ChildProcess.kill()` and `process.kill(pid, …)`** —
   forceful and unclean: no handler, no final line, whatever the exit metadata says.
 - **Windows, `TerminateProcess` / `TerminateJobObject`** — forceful and unclean, and the

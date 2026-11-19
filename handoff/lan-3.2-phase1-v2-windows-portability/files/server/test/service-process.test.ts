@@ -267,6 +267,7 @@ test('SIGTERM is a graceful shutdown on POSIX', async (t) => {
 
     service.child.kill('SIGTERM');
     const exit = await service.waitForExit();
+    assert.equal(exit.signal, null, 'a handled SIGTERM completes through a normal process exit');
     assert.equal(exit.code, 0, 'a signal shutdown is the ordinary, clean path');
 
     const final = service.lines().find((line) => line.msg === 'service.shutdown_complete');
@@ -289,8 +290,12 @@ test('a forced termination on Windows is reported as a signal death but is not a
   // `TerminateProcess(handle, 1)` and then sets `process->exit_signal = signum`
   // (libuv src/win/process.c), which is what surfaces as `signal`.
   //
-  // This is exactly why the shutdown *record* is the discriminator and the exit metadata is
-  // not: a killed Windows child looks identical to a gracefully terminated POSIX one.
+  // The metadata here is *not* what a handled POSIX SIGTERM produces. There Node clears its
+  // terminate-on-signal default once a listener exists, the handler runs, and the process
+  // exits normally — so the parent sees `signal: null` with code `0`, `69` or `1`, while a
+  // Windows forced termination reports a signal and the child never reached its handler.
+  // The metadata differs; what proves the shutdown sequence ran is the final
+  // `service.shutdown_complete` record, and this test requires it to be absent.
   if (process.platform !== 'win32') {
     t.skip('Windows termination semantics only; POSIX graceful shutdown is covered above');
     return;
