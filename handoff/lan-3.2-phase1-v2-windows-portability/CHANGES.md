@@ -11,7 +11,7 @@ touched, so no runtime contract changes and nothing about the implementation is 
 | `server/test/service-mode.test.ts` | test | new unit test: the registered `SIGTERM` handler requests a clean stop (reason `SIGTERM`, code `0`) |
 | `server/ARCHITECTURE.md` | docs | signal semantics per platform; `Ctrl+C`, the service stdin command and a programmatic kill are three distinct cases; termination is classified per platform (§13 typo fixed) |
 
-Diff (cumulative against the accepted v2 base): **4 files, +262 / −9**. No assertion was
+Diff (cumulative against the accepted v2 base): **4 files, +278 / −9**. No assertion was
 removed or loosened; every original claim still holds on the platform where it is true.
 
 > **Revision 2.** A review of the first correction found three claims wrong. They are fixed
@@ -439,6 +439,68 @@ now enumerate the same set of paths:
 | `Ctrl+C` described as unavailable on Windows | no — it is documented as the interactive-console path on both platforms |
 | stdin command described as unavailable on POSIX | no — "available when enabled" on both |
 | exit-code expectations (`0`/`69`/`1`) | consistent across §10, §10.2, §13 items 6, 12a and 18g |
+
+---
+
+## Revision 7 — stop-path precision
+
+Documentation only: `ARCHITECTURE.md`. No test, no `server/src/` file, no manifest, no
+migration and no dependency is touched.
+
+### R14 · §10.2 — the Job Object backstop is available to the host as well
+
+**Was:** "A Windows service host has no console, so for it only the stdin control channel
+among these four is available." The Job Object backstop is available to the host too, so
+"only … is available" was wrong about availability even though the graceful conclusion was
+right.
+
+**Now:** "A Windows service host has no console, so the stdin control channel is its only
+graceful, handler-driven stop path. The Job Object remains available as a forced backstop,
+but it cannot run the shutdown handler."
+
+### R15 · §10 — `process.kill(pid, …)` promised too much on POSIX
+
+**Was:** `| process.kill(pid, …) | delivered → handler → exits 0, or 69 | … |`. Not every
+POSIX signal can be caught: `SIGKILL` and `SIGSTOP` cannot be handled by any Node.js
+listener, so this row claimed a graceful outcome for signals that never reach the handler.
+
+**Now:** the row is `process.kill(pid, 'SIGINT'/'SIGTERM')`, and the POSIX column says these
+catchable signals reach their registered handlers, which run the shutdown sequence → exits
+`0`, `69` or `1`. The Windows column keeps the existing forced-termination explanation
+unchanged. A new sentence under the table states the other half explicitly:
+
+> `SIGKILL` and `SIGSTOP` are not graceful on POSIX either: no Node.js listener can run for
+> them, so `process.kill(pid, 'SIGKILL')` ends the process without the handler — the same
+> unclean outcome as a Windows kill, which is exactly what the `db-close.test.ts` fixture
+> relies on.
+
+### R16 · §10 — "the three cases"
+
+**Was:** "conflating the three cases". The table enumerates six triggers across four distinct
+stop paths, so the count was stale.
+
+**Now:** "conflating the different stop paths".
+
+### R17 · §13 — the stdin stop path had no verification item
+
+Found by the required consistency scan, and the only change here that is not one of the three
+findings: §13 verified `Ctrl+C` (item 6) and the forced-kill exit shapes (item 12a) but never
+the stdin control channel that §10.2 calls the host's only graceful stop path. New item 6a
+records what to check on the host — `service.ready` reporting `"serviceMode":true`,
+`service.control_received` after `{"cmd":"shutdown"}`, a final `service.shutdown_complete`
+with `ok: true`, exit `0`, and an empty Job Object — and notes that stdin EOF is a different
+(also shutting-down) path, not the graceful command. Nothing else in §13 was renumbered.
+
+### Consistency scan performed (§10, §10.2, §13)
+
+| check | result |
+| --- | --- |
+| four stop paths named identically in both tables | `Ctrl+C` at a console; stdin control channel; OS-delivered POSIX `SIGTERM`; Job Object termination |
+| graceful vs forced split | first three graceful (handler runs, result decided by `0`/`69`/`1`); Job Object forced and unclean |
+| availability per platform | `Ctrl+C` needs a console on both platforms; `SIGTERM` POSIX only; stdin only in service mode; Job Object Windows only |
+| host availability wording | corrected in R14 — graceful path is stdin only, forced backstop remains |
+| any claim that a kill invokes the handler | none; `SIGKILL`/`SIGSTOP` now stated explicitly as uncatchable |
+| exit-code expectations | `0` / `69` / `1` consistent across §10, §10.2, §13 items 6, 6a, 12a and 18g |
 
 ---
 

@@ -1,8 +1,8 @@
 diff --git a/server/ARCHITECTURE.md b/server/ARCHITECTURE.md
-index c8d1b27..42d0886 100644
+index c8d1b27..0c42150 100644
 --- a/server/ARCHITECTURE.md
 +++ b/server/ARCHITECTURE.md
-@@ -846,9 +846,36 @@ can confirm which mode is running without inspecting the configuration. Neither
+@@ -846,9 +846,41 @@ can confirm which mode is running without inspecting the configuration. Neither
  contains certificate or key material — only the subject, validity window and SHA-256
  fingerprint of the certificate.
  
@@ -17,17 +17,22 @@ index c8d1b27..42d0886 100644
 +describes how the stop was *requested*, not how it *ended*. Shutdown is the same for both
 +transports, and the database is closed after the listener in both.
 +
-+What can actually *deliver* a stop is platform-specific, and conflating the three cases is
-+how a "graceful shutdown" claim goes wrong on Windows:
++What can actually *deliver* a stop is platform-specific, and conflating the different stop
++paths is how a "graceful shutdown" claim goes wrong on Windows:
 +
 +| trigger | POSIX | Windows |
 +| --- | --- | --- |
 +| `Ctrl+C` at a console | `SIGINT` delivered → handler → exits `0`, or `69` if a stage failed | `SIGINT` raised from the console control event → handler → exits `0`, or `69` if a stage failed (interactive consoles only) |
 +| `SIGTERM` from the OS | delivered → handler → exits `0`, or `69` if a stage failed | no such signal exists on Windows; nothing is delivered |
 +| `ChildProcess.kill('SIGINT'/'SIGTERM')` | delivered → handler → exits `0`, or `69` | `TerminateProcess`: **no handler runs**; the parent is told the child died by the requested signal (`code: null`, `signal`) |
-+| `process.kill(pid, …)` | delivered → handler → exits `0`, or `69` | `TerminateProcess`: **no handler runs**; nothing is recorded on the parent's handle, so the parent sees an exit code and `signal: null` |
++| `process.kill(pid, 'SIGINT'/'SIGTERM')` | these catchable signals reach their registered handlers, which run the shutdown sequence → exits `0`, `69` or `1` | `TerminateProcess`: **no handler runs**; nothing is recorded on the parent's handle, so the parent sees an exit code and `signal: null` |
 +| stdin control command (§10.2) | available when enabled | **the supported graceful stop for a service** |
 +| the host terminating the Job Object | no Job Object exists; a POSIX supervisor kills the process instead | forced backstop: **no handler runs**, and the stop is recorded as unclean |
++
++`SIGKILL` and `SIGSTOP` are not graceful on POSIX either: no Node.js listener can run for
++them, so `process.kill(pid, 'SIGKILL')` ends the process without the handler — the same
++unclean outcome as a Windows kill, which is exactly what the `db-close.test.ts` fixture
++relies on.
 +
 +No Windows kill operation — `ChildProcess.kill()`, `process.kill()`, or the host's
 +`TerminateJobObject` — invokes RHODES's shutdown handler, so none of them is a shutdown, and
@@ -42,7 +47,7 @@ index c8d1b27..42d0886 100644
  
  ### 10.1 · What a shutdown reports, and what it exits with (phase LAN-3.2)
  
-@@ -958,8 +985,90 @@ With the flag absent, stdin is untouched: typing at a developer's terminal can n
+@@ -958,8 +990,92 @@ With the flag absent, stdin is untouched: typing at a developer's terminal can n
  the server, and `service.ready` still reports `"serviceMode":false`.
  
  There is deliberately no HTTP shutdown endpoint, no PID file, no named pipe and no helper
@@ -61,7 +66,9 @@ index c8d1b27..42d0886 100644
 +The first three can initiate a graceful shutdown; the fourth cannot. In all three graceful
 +cases the *result* is still decided by the shutdown itself — exit `0` only when every stage
 +succeeded, `69` when a stage failed, `1` for a fatal fault (§10.1). A Windows service host
-+has no console, so for it only the stdin control channel among these four is available.
++has no console, so the stdin control channel is its only graceful, handler-driven stop path.
++The Job Object remains available as a forced backstop, but it cannot run the shutdown
++handler.
 +
 +**On Windows, three different things are routinely confused.** The first two are graceful
 +stop paths for different contexts; the third is forced termination:
@@ -135,7 +142,7 @@ index c8d1b27..42d0886 100644
  
  Run the service on the host, not from a mapped drive or a network path — the working
  directory and the data directory must both be local.
-@@ -1025,7 +1134,10 @@ office, verify on the actual Windows host:
+@@ -1025,7 +1141,19 @@ office, verify on the actual Windows host:
  3. `Get-NetTCPConnection -LocalPort 4317` shows `127.0.0.1` only, never `0.0.0.0`.
  4. A second machine cannot reach `http://<host>:4317/api/health` (expected: refused).
  5. Setting `RHODES_DATA_DIR` to a UNC path or to `%OneDrive%` is refused at startup.
@@ -144,10 +151,19 @@ index c8d1b27..42d0886 100644
 +   restart keeps records. Exit `0` when every stage succeeds; exit `69` with a final
 +   line whose `ok` is `false` is the documented outcome of a failed stage, not a
 +   failure of the `Ctrl+C` path.
++6a. **Stdin stop path in service mode.** §10.2 calls the stdin control channel the only
++   graceful, handler-driven stop path available to a service host, and it has not been
++   exercised on Windows. Start the server with `RHODES_SERVICE_MODE=1` under the future
++   host (or a plain shell with piped stdin), confirm `service.ready` reports
++   `"serviceMode":true`, write `{"cmd":"shutdown"}` followed by a newline, and confirm on
++   the host that `service.control_received` is logged, the final line is
++   `service.shutdown_complete` with `ok: true`, the exit code is `0`, and the Job Object is
++   empty afterwards. A stdin EOF instead of the command is a different path — it must also
++   shut down, but it is not the graceful command.
  7. Task Scheduler / service wrapper behaviour: automatic restart, log capture, and
     correct exit codes on configuration failure.
  8. **Junction tests (LAN-1.1, not yet run on Windows).** `mklink /J C:\RHODES-data
-@@ -1051,6 +1163,21 @@ office, verify on the actual Windows host:
+@@ -1051,6 +1179,21 @@ office, verify on the actual Windows host:
  12. **REPLACE protection on Windows.** `PRAGMA recursive_triggers` is a connection-level
      SQLite setting, identical on every platform, but the `INSERT OR REPLACE` refusal has
      only been demonstrated on Linux.
@@ -169,7 +185,7 @@ index c8d1b27..42d0886 100644
  13. **Hidden password entry (LAN-2, not yet run on Windows).** `npm run
      server:admin:bootstrap` must hide typing in `cmd.exe` and in Windows Terminal, and
      must refuse when stdin is redirected. The automated tests prove the *refusal* path on
-@@ -1105,6 +1232,8 @@ office, verify on the actual Windows host:
+@@ -1105,6 +1248,8 @@ office, verify on the actual Windows host:
         `config.tls_*` code, and must **not** create `%ProgramData%\RHODES\data` on a
         first run. Never fall back to HTTP.
      g. `Ctrl+C` with HTTPS enabled exits `0`, leaves no `-wal` file, and the process is

@@ -854,17 +854,22 @@ stages succeeded** — a stop that ran but failed a stage exits `69` (§10.1). "
 describes how the stop was *requested*, not how it *ended*. Shutdown is the same for both
 transports, and the database is closed after the listener in both.
 
-What can actually *deliver* a stop is platform-specific, and conflating the three cases is
-how a "graceful shutdown" claim goes wrong on Windows:
+What can actually *deliver* a stop is platform-specific, and conflating the different stop
+paths is how a "graceful shutdown" claim goes wrong on Windows:
 
 | trigger | POSIX | Windows |
 | --- | --- | --- |
 | `Ctrl+C` at a console | `SIGINT` delivered → handler → exits `0`, or `69` if a stage failed | `SIGINT` raised from the console control event → handler → exits `0`, or `69` if a stage failed (interactive consoles only) |
 | `SIGTERM` from the OS | delivered → handler → exits `0`, or `69` if a stage failed | no such signal exists on Windows; nothing is delivered |
 | `ChildProcess.kill('SIGINT'/'SIGTERM')` | delivered → handler → exits `0`, or `69` | `TerminateProcess`: **no handler runs**; the parent is told the child died by the requested signal (`code: null`, `signal`) |
-| `process.kill(pid, …)` | delivered → handler → exits `0`, or `69` | `TerminateProcess`: **no handler runs**; nothing is recorded on the parent's handle, so the parent sees an exit code and `signal: null` |
+| `process.kill(pid, 'SIGINT'/'SIGTERM')` | these catchable signals reach their registered handlers, which run the shutdown sequence → exits `0`, `69` or `1` | `TerminateProcess`: **no handler runs**; nothing is recorded on the parent's handle, so the parent sees an exit code and `signal: null` |
 | stdin control command (§10.2) | available when enabled | **the supported graceful stop for a service** |
 | the host terminating the Job Object | no Job Object exists; a POSIX supervisor kills the process instead | forced backstop: **no handler runs**, and the stop is recorded as unclean |
+
+`SIGKILL` and `SIGSTOP` are not graceful on POSIX either: no Node.js listener can run for
+them, so `process.kill(pid, 'SIGKILL')` ends the process without the handler — the same
+unclean outcome as a Windows kill, which is exactly what the `db-close.test.ts` fixture
+relies on.
 
 No Windows kill operation — `ChildProcess.kill()`, `process.kill()`, or the host's
 `TerminateJobObject` — invokes RHODES's shutdown handler, so none of them is a shutdown, and
@@ -998,7 +1003,9 @@ supported stop paths are these four, and they are not equivalent:
 The first three can initiate a graceful shutdown; the fourth cannot. In all three graceful
 cases the *result* is still decided by the shutdown itself — exit `0` only when every stage
 succeeded, `69` when a stage failed, `1` for a fatal fault (§10.1). A Windows service host
-has no console, so for it only the stdin control channel among these four is available.
+has no console, so the stdin control channel is its only graceful, handler-driven stop path.
+The Job Object remains available as a forced backstop, but it cannot run the shutdown
+handler.
 
 **On Windows, three different things are routinely confused.** The first two are graceful
 stop paths for different contexts; the third is forced termination:
@@ -1138,6 +1145,15 @@ office, verify on the actual Windows host:
    restart keeps records. Exit `0` when every stage succeeds; exit `69` with a final
    line whose `ok` is `false` is the documented outcome of a failed stage, not a
    failure of the `Ctrl+C` path.
+6a. **Stdin stop path in service mode.** §10.2 calls the stdin control channel the only
+   graceful, handler-driven stop path available to a service host, and it has not been
+   exercised on Windows. Start the server with `RHODES_SERVICE_MODE=1` under the future
+   host (or a plain shell with piped stdin), confirm `service.ready` reports
+   `"serviceMode":true`, write `{"cmd":"shutdown"}` followed by a newline, and confirm on
+   the host that `service.control_received` is logged, the final line is
+   `service.shutdown_complete` with `ok: true`, the exit code is `0`, and the Job Object is
+   empty afterwards. A stdin EOF instead of the command is a different path — it must also
+   shut down, but it is not the graceful command.
 7. Task Scheduler / service wrapper behaviour: automatic restart, log capture, and
    correct exit codes on configuration failure.
 8. **Junction tests (LAN-1.1, not yet run on Windows).** `mklink /J C:\RHODES-data
