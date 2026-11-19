@@ -1147,13 +1147,23 @@ office, verify on the actual Windows host:
    failure of the `Ctrl+C` path.
 6a. **Stdin stop path in service mode.** §10.2 calls the stdin control channel the only
    graceful, handler-driven stop path available to a service host, and it has not been
-   exercised on Windows. Start the server with `RHODES_SERVICE_MODE=1` under the future
-   host (or a plain shell with piped stdin), confirm `service.ready` reports
-   `"serviceMode":true`, write `{"cmd":"shutdown"}` followed by a newline, and confirm on
-   the host that `service.control_received` is logged, the final line is
-   `service.shutdown_complete` with `ok: true`, the exit code is `0`, and the Job Object is
-   empty afterwards. A stdin EOF instead of the command is a different path — it must also
-   shut down, but it is not the graceful command.
+   exercised on Windows. Verify it in the two environments separately — they do not carry
+   the same guarantees, and only one of them has a Job Object:
+   - **Plain shell, no service host.** Start the server with `RHODES_SERVICE_MODE=1` and a
+     piped stdin, and confirm `service.ready` reports `"serviceMode":true`. Write
+     `{"cmd":"shutdown"}` followed by a newline; confirm `service.control_received` and a
+     final `service.shutdown_complete` with `ok: true` and `reason: "stdin"`, exit code `0`,
+     and the child gone without an orphan left behind (`Get-Process node`).
+   - **Future .NET service host.** Repeat the same protocol test through the actual host, and
+     additionally confirm the Job Object is empty after the child exits. A plain-shell run
+     has no Job Object, so that last check applies to this environment only.
+
+   Ending stdin **without** sending the command is a separate, automatic stop trigger, not
+   the command test: the channel closing requests a shutdown with reason `stdin-eof`, logged
+   as `service.stdin_eof`, and the existing process test expects a final
+   `service.shutdown_complete` with `ok: true` and exit code `0`. Do not record that as a
+   successful `{"cmd":"shutdown"}` test — it proves the orphan guard, not the control
+   command.
 7. Task Scheduler / service wrapper behaviour: automatic restart, log capture, and
    correct exit codes on configuration failure.
 8. **Junction tests (LAN-1.1, not yet run on Windows).** `mklink /J C:\RHODES-data

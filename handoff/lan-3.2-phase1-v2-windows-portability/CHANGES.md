@@ -11,7 +11,7 @@ touched, so no runtime contract changes and nothing about the implementation is 
 | `server/test/service-mode.test.ts` | test | new unit test: the registered `SIGTERM` handler requests a clean stop (reason `SIGTERM`, code `0`) |
 | `server/ARCHITECTURE.md` | docs | signal semantics per platform; `Ctrl+C`, the service stdin command and a programmatic kill are three distinct cases; termination is classified per platform (§13 typo fixed) |
 
-Diff (cumulative against the accepted v2 base): **4 files, +278 / −9**. No assertion was
+Diff (cumulative against the accepted v2 base): **4 files, +288 / −9**. No assertion was
 removed or loosened; every original claim still holds on the platform where it is true.
 
 > **Revision 2.** A review of the first correction found three claims wrong. They are fixed
@@ -490,6 +490,33 @@ records what to check on the host — `service.ready` reporting `"serviceMode":t
 `service.control_received` after `{"cmd":"shutdown"}`, a final `service.shutdown_complete`
 with `ok: true`, exit `0`, and an empty Job Object — and notes that stdin EOF is a different
 (also shutting-down) path, not the graceful command. Nothing else in §13 was renumbered.
+
+### R18 · §13 item 6a — the two stdin environments, and what EOF proves
+
+Found on review of R17: item 6a allowed either a future service host or a plain shell with
+piped stdin, then unconditionally required that the Job Object be empty — which a plain-shell
+run cannot satisfy, because there is no Job Object in play. And its EOF sentence said only
+"a different path", without saying what the existing test actually expects.
+
+**Now** item 6a splits the environments:
+
+- **Plain shell, no service host** — `RHODES_SERVICE_MODE=1` with piped stdin,
+  `service.ready` reporting `"serviceMode":true`, then `{"cmd":"shutdown"}`; expect
+  `service.control_received`, a final `service.shutdown_complete` with `ok: true` and
+  `reason: "stdin"`, exit code `0`, and no orphaned child. No Job Object assertion.
+- **Future .NET service host** — the same protocol test through the host, **plus** the empty
+  Job Object, which applies to that environment only.
+
+The EOF paragraph now states what it is and what the test expects: closing stdin without the
+command is a separate automatic stop trigger, it requests shutdown with reason `stdin-eof`,
+logs `service.stdin_eof`, and `service-process.test.ts` expects a final
+`service.shutdown_complete` with `ok: true` and exit code `0`. It proves the orphan guard,
+not the control command, and must not be recorded as a successful `{"cmd":"shutdown"}` test.
+
+Both claims were checked against the code: `src/serviceMode.ts` requests `'stdin'` for the
+command and `'stdin-eof'` from the `end` handler after logging `service.stdin_eof`, and
+`service.control_received` is logged for either request. The four-path classification and
+every other Revision 7 correction are unchanged.
 
 ### Consistency scan performed (§10, §10.2, §13)
 
