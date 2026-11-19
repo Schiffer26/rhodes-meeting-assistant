@@ -11,7 +11,7 @@ touched, so no runtime contract changes and nothing about the implementation is 
 | `server/test/service-mode.test.ts` | test | new unit test: the registered `SIGTERM` handler requests a clean stop (reason `SIGTERM`, code `0`) |
 | `server/ARCHITECTURE.md` | docs | signal semantics per platform; `Ctrl+C`, the service stdin command and a programmatic kill are three distinct cases; termination is classified per platform (§13 typo fixed) |
 
-Diff (cumulative against the accepted v2 base): **4 files, +247 / −8**. No assertion was
+Diff (cumulative against the accepted v2 base): **4 files, +262 / −9**. No assertion was
 removed or loosened; every original claim still holds on the platform where it is true.
 
 > **Revision 2.** A review of the first correction found three claims wrong. They are fixed
@@ -378,6 +378,67 @@ a POSIX `SIGTERM` that reaches the handler ends in a normal exit with `signal: n
   The existing `exit.code === 0` assertion and every shutdown-record assertion
   (`reason: 'SIGTERM'`, `ok: true`, `exitCode: 0`) are retained. **This assertion runs on
   Linux and passes there** — it is the one part of this work that is not Windows-only.
+
+---
+
+## Revision 6 — §10.2 contradicted itself about Windows stop paths
+
+Documentation only: `ARCHITECTURE.md`. No test, no `server/src/` file, no manifest, no
+migration and no dependency is touched.
+
+### R11 · §10.2 introduction misclassified the two graceful Windows paths
+
+**Was:** "**On Windows, three different things are routinely confused.** Only the first is a
+graceful stop, and it needs a human at a console:" — which flatly contradicted item 2, whose
+whole point is that the stdin command is the supported graceful stop for a service host with
+no console.
+
+**Now:** "The first two are graceful stop paths for different contexts; the third is forced
+termination:" The three numbered cases and their technical explanations are unchanged.
+
+### R12 · §10.2's "no HTTP shutdown endpoint" paragraph omitted `Ctrl+C`
+
+**Was:** "… the only ways to stop the service are the channel above, a POSIX signal, or the
+host terminating the Job Object (which is recorded as unclean)." That list left out the
+interactive `Ctrl+C` stop path documented in §10, and its "only ways" claimed completeness
+while being incomplete.
+
+**Now:** the paragraph enumerates all four supported stop paths in a table, with availability
+and effect:
+
+| path | availability | kind |
+| --- | --- | --- |
+| `Ctrl+C` at a console | wherever an operator has a console | graceful request |
+| the stdin control channel | only when service mode is enabled | graceful request |
+| an OS-delivered POSIX `SIGTERM` | POSIX only | graceful request |
+| host termination of the Job Object | forced backstop | **not a shutdown**: no handler, no final line, unclean |
+
+It states that the first three can initiate a graceful shutdown and the fourth cannot, that
+the result is still decided by the shutdown itself (`0`/`69`/`1`), and that a Windows service
+host with no console has only the stdin channel among them.
+
+### R13 · two knock-on consistency edits in §10
+
+Found by the contradiction scan required for this revision, and made because the §10 tables
+now enumerate the same set of paths:
+
+- §10's opening prose named only `Ctrl+C` and POSIX `SIGTERM`; it now also names the stdin
+  control command, so the prose, the §10 trigger table and the §10.2 table agree.
+- §10's trigger table gained the forced-backstop row it was missing (host terminating the Job
+  Object: no handler, recorded as unclean), and the footnote under it now says explicitly
+  that **no** Windows kill operation — `ChildProcess.kill()`, `process.kill()` or
+  `TerminateJobObject` — invokes the handler.
+
+### Contradiction scan performed
+
+| check | result |
+| --- | --- |
+| claims that a single path is "the only way" to stop | none outside the corrected paragraph |
+| "only the first is a graceful stop" | removed |
+| §10 table vs §10.2 table vs §13 checklist | same four paths, same availability, same graceful/forced split |
+| `Ctrl+C` described as unavailable on Windows | no — it is documented as the interactive-console path on both platforms |
+| stdin command described as unavailable on POSIX | no — "available when enabled" on both |
+| exit-code expectations (`0`/`69`/`1`) | consistent across §10, §10.2, §13 items 6, 12a and 18g |
 
 ---
 

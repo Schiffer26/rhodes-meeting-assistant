@@ -846,13 +846,13 @@ can confirm which mode is running without inspecting the configuration. Neither 
 contains certificate or key material — only the subject, validity window and SHA-256
 fingerprint of the certificate.
 
-Stop with `Ctrl+C` in a console, or with a `SIGTERM` delivered by the operating system on
-POSIX. Either way the registered handler runs: the listener closes, in-flight requests
-finish, the WAL is checkpointed, the connection closes, and the process exits `0` **only if
-every one of those stages succeeded** — a stop that ran but failed a stage exits `69`
-(§10.1). "Graceful" describes how the stop was *requested*, not how it *ended*.
-Shutdown is the same for both transports, and the database is closed after the listener in
-both.
+Stop with `Ctrl+C` in a console, with the stdin control command when service mode is enabled
+(§10.2), or with a `SIGTERM` delivered by the operating system on POSIX. Either way the
+registered handler runs: the listener closes, in-flight requests finish, the WAL is
+checkpointed, the connection closes, and the process exits `0` **only if every one of those
+stages succeeded** — a stop that ran but failed a stage exits `69` (§10.1). "Graceful"
+describes how the stop was *requested*, not how it *ended*. Shutdown is the same for both
+transports, and the database is closed after the listener in both.
 
 What can actually *deliver* a stop is platform-specific, and conflating the three cases is
 how a "graceful shutdown" claim goes wrong on Windows:
@@ -864,9 +864,11 @@ how a "graceful shutdown" claim goes wrong on Windows:
 | `ChildProcess.kill('SIGINT'/'SIGTERM')` | delivered → handler → exits `0`, or `69` | `TerminateProcess`: **no handler runs**; the parent is told the child died by the requested signal (`code: null`, `signal`) |
 | `process.kill(pid, …)` | delivered → handler → exits `0`, or `69` | `TerminateProcess`: **no handler runs**; nothing is recorded on the parent's handle, so the parent sees an exit code and `signal: null` |
 | stdin control command (§10.2) | available when enabled | **the supported graceful stop for a service** |
+| the host terminating the Job Object | no Job Object exists; a POSIX supervisor kills the process instead | forced backstop: **no handler runs**, and the stop is recorded as unclean |
 
-Neither Windows kill operation invokes RHODES's shutdown handler, so neither is a shutdown,
-and the metadata they report is not comparable with a handled signal. Which shape a kill
+No Windows kill operation — `ChildProcess.kill()`, `process.kill()`, or the host's
+`TerminateJobObject` — invokes RHODES's shutdown handler, so none of them is a shutdown, and
+the metadata a kill reports is not comparable with a handled signal. Which shape a kill
 produces depends on the API (`code: null, signal: <name>` for `ChildProcess.kill()`;
 `signal: null` with an ordinary non-zero code for `process.kill()` or `TerminateProcess`,
 §10.2). A POSIX `SIGTERM` that reaches the handler is a different case entirely: Node removes
@@ -983,11 +985,23 @@ With the flag absent, stdin is untouched: typing at a developer's terminal can n
 the server, and `service.ready` still reports `"serviceMode":false`.
 
 There is deliberately no HTTP shutdown endpoint, no PID file, no named pipe and no helper
-process: the only ways to stop the service are the channel above, a POSIX signal, or the
-host terminating the Job Object (which is recorded as unclean).
+process, because each of those would add a remote or ambient way to stop the service. The
+supported stop paths are these four, and they are not equivalent:
 
-**On Windows, three different things are routinely confused.** Only the first is a
-graceful stop, and it needs a human at a console:
+| path | availability | what it does |
+| --- | --- | --- |
+| `Ctrl+C` at a console | wherever an operator has a console (§10) | raises `SIGINT`; the handler runs the shutdown sequence |
+| the stdin control channel above | only when service mode is enabled | the handler runs the shutdown sequence |
+| an OS-delivered POSIX `SIGTERM` | POSIX only — Windows has no such signal | the handler runs the shutdown sequence |
+| the host terminating the Job Object | forced backstop when the deadline expires | **not a shutdown**: no handler runs, no final line, recorded as unclean |
+
+The first three can initiate a graceful shutdown; the fourth cannot. In all three graceful
+cases the *result* is still decided by the shutdown itself — exit `0` only when every stage
+succeeded, `69` when a stage failed, `1` for a fatal fault (§10.1). A Windows service host
+has no console, so for it only the stdin control channel among these four is available.
+
+**On Windows, three different things are routinely confused.** The first two are graceful
+stop paths for different contexts; the third is forced termination:
 
 1. **Interactive `Ctrl+C`.** A Windows console raises a control event, Node turns it into a
    `SIGINT` event, and the registered handler runs the full shutdown sequence. `SIGINT` from
